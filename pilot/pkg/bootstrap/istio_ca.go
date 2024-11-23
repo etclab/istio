@@ -147,6 +147,52 @@ func (s *Server) initCAServer(ca caserver.CertificateAuthority, opts *caOptions)
 	s.caServer = caServer
 }
 
+// same as RunCA for now
+// todo: this should be in its own file: istio_kc.go
+func (s *Server) RunKeyCurator(grpc *grpc.Server) {
+	iss := trustedIssuer.Get()
+	aud := audience.Get()
+
+	log.Infof("Starting Key Curator with issuer %s, audience %s", iss, aud)
+
+	token, err := os.ReadFile(securityModel.ThirdPartyJwtPath)
+	if err == nil {
+		tok, err := detectAuthEnv(string(token))
+		if err != nil {
+			log.Warnf("Starting with invalid K8S JWT token: %v", err)
+		} else {
+			if iss == "" {
+				iss = tok.Iss
+			}
+			if len(tok.Aud) > 0 && len(aud) == 0 {
+				aud = tok.Aud[0]
+			}
+		}
+	}
+
+	// TODO: if not set, parse Istiod's own token (if present) and get the issuer. The same issuer is used
+	// for all tokens - no need to configure twice. The token may also include cluster info to auto-configure
+	// networking properties.
+	if iss != "" && // issuer set explicitly or extracted from our own JWT
+		k8sInCluster.Get() == "" { // not running in cluster - in cluster use direct call to apiserver
+		// Add a custom authenticator using standard JWT validation, if not running in K8S
+		// When running inside K8S - we can use the built-in validator, which also check pod removal (invalidation).
+		jwtRule := v1beta1.JWTRule{Issuer: iss, Audiences: []string{aud}}
+		oidcAuth, err := authenticate.NewJwtAuthenticator(&jwtRule, nil)
+		if err == nil {
+			s.keyCuratorServer.Authenticators = append(s.keyCuratorServer.Authenticators, oidcAuth)
+			log.Info("Using out-of-cluster JWT authentication")
+		} else {
+			log.Info("K8S token doesn't support OIDC, using only in-cluster auth")
+		}
+	}
+
+	// todo: implement Register method
+	s.keyCuratorServer.Register(grpc)
+
+	log.Info("Key Curator server has started")
+}
+
 // RunCA will start the cert signing GRPC service on an existing server.
 // Protected by installer options: the CA will be started only if the JWT token in /var/run/secrets
 // is mounted. If it is missing - for example old versions of K8S that don't support such tokens -
