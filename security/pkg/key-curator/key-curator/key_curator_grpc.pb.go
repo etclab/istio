@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v5.28.3
-// source: key-curator/key_curator.proto
+// source: key_curator.proto
 
 package key_curator
 
@@ -11,6 +11,7 @@ import (
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
+	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
 // This is a compile-time assertion to ensure that this generated file
@@ -19,18 +20,24 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	KeyCurator_Setup_FullMethodName        = "/keycurator.KeyCurator/Setup"
-	KeyCurator_RegisterUser_FullMethodName = "/keycurator.KeyCurator/RegisterUser"
-	KeyCurator_Update_FullMethodName       = "/keycurator.KeyCurator/Update"
+	KeyCurator_FetchUpdate_FullMethodName       = "/keycurator.KeyCurator/FetchUpdate"
+	KeyCurator_FetchPublicParams_FullMethodName = "/keycurator.KeyCurator/FetchPublicParams"
+	KeyCurator_RegisterUser_FullMethodName      = "/keycurator.KeyCurator/RegisterUser"
+	KeyCurator_Decrypt_FullMethodName           = "/keycurator.KeyCurator/Decrypt"
 )
 
 // KeyCuratorClient is the client API for KeyCurator service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type KeyCuratorClient interface {
-	Setup(ctx context.Context, in *SetupRequest, opts ...grpc.CallOption) (*SetupResponse, error)
+	FetchUpdate(ctx context.Context, in *UpdateRequest, opts ...grpc.CallOption) (*UpdateResponse, error)
+	FetchPublicParams(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*PublicParamsResponse, error)
 	RegisterUser(ctx context.Context, in *RegisterRequest, opts ...grpc.CallOption) (*RegisterResponse, error)
-	Update(ctx context.Context, in *UpdateRequest, opts ...grpc.CallOption) (*UpdateResponse, error)
+	// todo: remove this later
+	// after alice receives the pp -- she'll encrypt a message with id 1
+	// there'll be a user with id 1 at server side -- alice will send the
+	// encrypted message to the server to decrypt
+	Decrypt(ctx context.Context, in *DecryptRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 }
 
 type keyCuratorClient struct {
@@ -41,10 +48,20 @@ func NewKeyCuratorClient(cc grpc.ClientConnInterface) KeyCuratorClient {
 	return &keyCuratorClient{cc}
 }
 
-func (c *keyCuratorClient) Setup(ctx context.Context, in *SetupRequest, opts ...grpc.CallOption) (*SetupResponse, error) {
+func (c *keyCuratorClient) FetchUpdate(ctx context.Context, in *UpdateRequest, opts ...grpc.CallOption) (*UpdateResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(SetupResponse)
-	err := c.cc.Invoke(ctx, KeyCurator_Setup_FullMethodName, in, out, cOpts...)
+	out := new(UpdateResponse)
+	err := c.cc.Invoke(ctx, KeyCurator_FetchUpdate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *keyCuratorClient) FetchPublicParams(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*PublicParamsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PublicParamsResponse)
+	err := c.cc.Invoke(ctx, KeyCurator_FetchPublicParams_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -61,10 +78,10 @@ func (c *keyCuratorClient) RegisterUser(ctx context.Context, in *RegisterRequest
 	return out, nil
 }
 
-func (c *keyCuratorClient) Update(ctx context.Context, in *UpdateRequest, opts ...grpc.CallOption) (*UpdateResponse, error) {
+func (c *keyCuratorClient) Decrypt(ctx context.Context, in *DecryptRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(UpdateResponse)
-	err := c.cc.Invoke(ctx, KeyCurator_Update_FullMethodName, in, out, cOpts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, KeyCurator_Decrypt_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -75,9 +92,14 @@ func (c *keyCuratorClient) Update(ctx context.Context, in *UpdateRequest, opts .
 // All implementations must embed UnimplementedKeyCuratorServer
 // for forward compatibility.
 type KeyCuratorServer interface {
-	Setup(context.Context, *SetupRequest) (*SetupResponse, error)
+	FetchUpdate(context.Context, *UpdateRequest) (*UpdateResponse, error)
+	FetchPublicParams(context.Context, *emptypb.Empty) (*PublicParamsResponse, error)
 	RegisterUser(context.Context, *RegisterRequest) (*RegisterResponse, error)
-	Update(context.Context, *UpdateRequest) (*UpdateResponse, error)
+	// todo: remove this later
+	// after alice receives the pp -- she'll encrypt a message with id 1
+	// there'll be a user with id 1 at server side -- alice will send the
+	// encrypted message to the server to decrypt
+	Decrypt(context.Context, *DecryptRequest) (*emptypb.Empty, error)
 	mustEmbedUnimplementedKeyCuratorServer()
 }
 
@@ -88,14 +110,17 @@ type KeyCuratorServer interface {
 // pointer dereference when methods are called.
 type UnimplementedKeyCuratorServer struct{}
 
-func (UnimplementedKeyCuratorServer) Setup(context.Context, *SetupRequest) (*SetupResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Setup not implemented")
+func (UnimplementedKeyCuratorServer) FetchUpdate(context.Context, *UpdateRequest) (*UpdateResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method FetchUpdate not implemented")
+}
+func (UnimplementedKeyCuratorServer) FetchPublicParams(context.Context, *emptypb.Empty) (*PublicParamsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method FetchPublicParams not implemented")
 }
 func (UnimplementedKeyCuratorServer) RegisterUser(context.Context, *RegisterRequest) (*RegisterResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RegisterUser not implemented")
 }
-func (UnimplementedKeyCuratorServer) Update(context.Context, *UpdateRequest) (*UpdateResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Update not implemented")
+func (UnimplementedKeyCuratorServer) Decrypt(context.Context, *DecryptRequest) (*emptypb.Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Decrypt not implemented")
 }
 func (UnimplementedKeyCuratorServer) mustEmbedUnimplementedKeyCuratorServer() {}
 func (UnimplementedKeyCuratorServer) testEmbeddedByValue()                    {}
@@ -118,20 +143,38 @@ func RegisterKeyCuratorServer(s grpc.ServiceRegistrar, srv KeyCuratorServer) {
 	s.RegisterService(&KeyCurator_ServiceDesc, srv)
 }
 
-func _KeyCurator_Setup_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SetupRequest)
+func _KeyCurator_FetchUpdate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(KeyCuratorServer).Setup(ctx, in)
+		return srv.(KeyCuratorServer).FetchUpdate(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: KeyCurator_Setup_FullMethodName,
+		FullMethod: KeyCurator_FetchUpdate_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(KeyCuratorServer).Setup(ctx, req.(*SetupRequest))
+		return srv.(KeyCuratorServer).FetchUpdate(ctx, req.(*UpdateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _KeyCurator_FetchPublicParams_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KeyCuratorServer).FetchPublicParams(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KeyCurator_FetchPublicParams_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KeyCuratorServer).FetchPublicParams(ctx, req.(*emptypb.Empty))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -154,20 +197,20 @@ func _KeyCurator_RegisterUser_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
-func _KeyCurator_Update_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(UpdateRequest)
+func _KeyCurator_Decrypt_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DecryptRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(KeyCuratorServer).Update(ctx, in)
+		return srv.(KeyCuratorServer).Decrypt(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: KeyCurator_Update_FullMethodName,
+		FullMethod: KeyCurator_Decrypt_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(KeyCuratorServer).Update(ctx, req.(*UpdateRequest))
+		return srv.(KeyCuratorServer).Decrypt(ctx, req.(*DecryptRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -180,18 +223,22 @@ var KeyCurator_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*KeyCuratorServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "Setup",
-			Handler:    _KeyCurator_Setup_Handler,
+			MethodName: "FetchUpdate",
+			Handler:    _KeyCurator_FetchUpdate_Handler,
+		},
+		{
+			MethodName: "FetchPublicParams",
+			Handler:    _KeyCurator_FetchPublicParams_Handler,
 		},
 		{
 			MethodName: "RegisterUser",
 			Handler:    _KeyCurator_RegisterUser_Handler,
 		},
 		{
-			MethodName: "Update",
-			Handler:    _KeyCurator_Update_Handler,
+			MethodName: "Decrypt",
+			Handler:    _KeyCurator_Decrypt_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "key-curator/key_curator.proto",
+	Metadata: "key_curator.proto",
 }

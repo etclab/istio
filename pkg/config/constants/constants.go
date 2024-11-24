@@ -212,4 +212,7 @@ const (
 	NoTraffic = "none"
 
 	EnableV2AutoAllocationLabel = "networking.istio.io/enable-autoallocate-ip"
+
+	// Max users for the key curator
+	MaxUsers = 4
 )

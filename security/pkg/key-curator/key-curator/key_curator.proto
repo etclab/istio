@@ -2,40 +2,52 @@ syntax = "proto3";
 
 option go_package = "istio.io/istio/security/pkg/key-curator/key-curator";
 
+import "rbe.proto";
+import "google/protobuf/empty.proto";
+
 package keycurator;
 
 service KeyCurator {
 
-    rpc Setup(SetupRequest) returns (SetupResponse) {}
+    rpc FetchUpdate(UpdateRequest) returns (UpdateResponse) {}
+    rpc FetchPublicParams(google.protobuf.Empty) returns (PublicParamsResponse) {}
     rpc RegisterUser(RegisterRequest) returns (RegisterResponse) {}
-    rpc Update(UpdateRequest) returns (UpdateResponse) {}
+    
+    // todo: remove this later
+    // after alice receives the pp -- she'll encrypt a message with id 1
+    // there'll be a user with id 1 at server side -- alice will send the
+    // encrypted message to the server to decrypt
+    rpc Decrypt(DecryptRequest) returns (google.protobuf.Empty) {}
 }
 
-message SetupRequest{
-    uint32 lambda = 1;
-    uint32 N = 2;
+message Empty {}
+
+message PublicParamsResponse {
+    rbe.proto.PublicParams pp = 1;
 }
 
-message SetupResponse{
-    string crs = 1;
+message RegisterRequest {
+    int32 id = 1;
+    rbe.proto.G1 publicKey = 2;
+    repeated rbe.proto.G1 xi = 3;
 }
 
-message RegisterRequest{
-    string crs = 1;
-    string pp = 2;
-    string id = 3;
-    string pk = 4;
+message RegisterResponse {
+    repeated rbe.proto.G1 commitments = 1; 
+    repeated rbe.proto.G1 opening = 2; 
 }
 
-message RegisterResponse{
-    string pp = 1;
+message UpdateRequest {
+    int32 id = 1;
 }
 
-message UpdateRequest{
-    string pp = 2;
-    string id = 3;
+// same as RegisterResponse
+message UpdateResponse {
+    repeated rbe.proto.G1 commitments = 1; 
+    repeated rbe.proto.G1 opening = 2; 
 }
 
-message UpdateResponse{
-    string u = 1;
+message DecryptRequest {
+    int32 id = 1;
+    rbe.proto.Ciphertext ciphertext = 2;
 }
