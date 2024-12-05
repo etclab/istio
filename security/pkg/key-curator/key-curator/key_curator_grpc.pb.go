@@ -20,24 +20,20 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
+	KeyCurator_FetchId_FullMethodName           = "/keycurator.KeyCurator/FetchId"
 	KeyCurator_FetchUpdate_FullMethodName       = "/keycurator.KeyCurator/FetchUpdate"
 	KeyCurator_FetchPublicParams_FullMethodName = "/keycurator.KeyCurator/FetchPublicParams"
 	KeyCurator_RegisterUser_FullMethodName      = "/keycurator.KeyCurator/RegisterUser"
-	KeyCurator_Decrypt_FullMethodName           = "/keycurator.KeyCurator/Decrypt"
 )
 
 // KeyCuratorClient is the client API for KeyCurator service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type KeyCuratorClient interface {
+	FetchId(ctx context.Context, in *IdRequest, opts ...grpc.CallOption) (*IdResponse, error)
 	FetchUpdate(ctx context.Context, in *UpdateRequest, opts ...grpc.CallOption) (*UpdateResponse, error)
 	FetchPublicParams(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*PublicParamsResponse, error)
 	RegisterUser(ctx context.Context, in *RegisterRequest, opts ...grpc.CallOption) (*RegisterResponse, error)
-	// todo: remove this later
-	// after alice receives the pp -- she'll encrypt a message with id 1
-	// there'll be a user with id 1 at server side -- alice will send the
-	// encrypted message to the server to decrypt
-	Decrypt(ctx context.Context, in *DecryptRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 }
 
 type keyCuratorClient struct {
@@ -46,6 +42,16 @@ type keyCuratorClient struct {
 
 func NewKeyCuratorClient(cc grpc.ClientConnInterface) KeyCuratorClient {
 	return &keyCuratorClient{cc}
+}
+
+func (c *keyCuratorClient) FetchId(ctx context.Context, in *IdRequest, opts ...grpc.CallOption) (*IdResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IdResponse)
+	err := c.cc.Invoke(ctx, KeyCurator_FetchId_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *keyCuratorClient) FetchUpdate(ctx context.Context, in *UpdateRequest, opts ...grpc.CallOption) (*UpdateResponse, error) {
@@ -78,28 +84,14 @@ func (c *keyCuratorClient) RegisterUser(ctx context.Context, in *RegisterRequest
 	return out, nil
 }
 
-func (c *keyCuratorClient) Decrypt(ctx context.Context, in *DecryptRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(emptypb.Empty)
-	err := c.cc.Invoke(ctx, KeyCurator_Decrypt_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 // KeyCuratorServer is the server API for KeyCurator service.
 // All implementations must embed UnimplementedKeyCuratorServer
 // for forward compatibility.
 type KeyCuratorServer interface {
+	FetchId(context.Context, *IdRequest) (*IdResponse, error)
 	FetchUpdate(context.Context, *UpdateRequest) (*UpdateResponse, error)
 	FetchPublicParams(context.Context, *emptypb.Empty) (*PublicParamsResponse, error)
 	RegisterUser(context.Context, *RegisterRequest) (*RegisterResponse, error)
-	// todo: remove this later
-	// after alice receives the pp -- she'll encrypt a message with id 1
-	// there'll be a user with id 1 at server side -- alice will send the
-	// encrypted message to the server to decrypt
-	Decrypt(context.Context, *DecryptRequest) (*emptypb.Empty, error)
 	mustEmbedUnimplementedKeyCuratorServer()
 }
 
@@ -110,6 +102,9 @@ type KeyCuratorServer interface {
 // pointer dereference when methods are called.
 type UnimplementedKeyCuratorServer struct{}
 
+func (UnimplementedKeyCuratorServer) FetchId(context.Context, *IdRequest) (*IdResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method FetchId not implemented")
+}
 func (UnimplementedKeyCuratorServer) FetchUpdate(context.Context, *UpdateRequest) (*UpdateResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method FetchUpdate not implemented")
 }
@@ -118,9 +113,6 @@ func (UnimplementedKeyCuratorServer) FetchPublicParams(context.Context, *emptypb
 }
 func (UnimplementedKeyCuratorServer) RegisterUser(context.Context, *RegisterRequest) (*RegisterResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RegisterUser not implemented")
-}
-func (UnimplementedKeyCuratorServer) Decrypt(context.Context, *DecryptRequest) (*emptypb.Empty, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Decrypt not implemented")
 }
 func (UnimplementedKeyCuratorServer) mustEmbedUnimplementedKeyCuratorServer() {}
 func (UnimplementedKeyCuratorServer) testEmbeddedByValue()                    {}
@@ -141,6 +133,24 @@ func RegisterKeyCuratorServer(s grpc.ServiceRegistrar, srv KeyCuratorServer) {
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&KeyCurator_ServiceDesc, srv)
+}
+
+func _KeyCurator_FetchId_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(IdRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KeyCuratorServer).FetchId(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KeyCurator_FetchId_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KeyCuratorServer).FetchId(ctx, req.(*IdRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _KeyCurator_FetchUpdate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -197,24 +207,6 @@ func _KeyCurator_RegisterUser_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
-func _KeyCurator_Decrypt_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(DecryptRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(KeyCuratorServer).Decrypt(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: KeyCurator_Decrypt_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(KeyCuratorServer).Decrypt(ctx, req.(*DecryptRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 // KeyCurator_ServiceDesc is the grpc.ServiceDesc for KeyCurator service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -222,6 +214,10 @@ var KeyCurator_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "keycurator.KeyCurator",
 	HandlerType: (*KeyCuratorServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "FetchId",
+			Handler:    _KeyCurator_FetchId_Handler,
+		},
 		{
 			MethodName: "FetchUpdate",
 			Handler:    _KeyCurator_FetchUpdate_Handler,
@@ -233,10 +229,6 @@ var KeyCurator_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RegisterUser",
 			Handler:    _KeyCurator_RegisterUser_Handler,
-		},
-		{
-			MethodName: "Decrypt",
-			Handler:    _KeyCurator_Decrypt_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

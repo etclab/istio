@@ -40,7 +40,7 @@ COPY ${TARGETARCH:-amd64}/pilot-agent /usr/local/bin/pilot-agent
 COPY --from=builder /go/bin/dlv /usr/local/bin/dlv
 
 # The pilot-agent will bootstrap Envoy.
-ENTRYPOINT ["/usr/local/bin/pilot-agent"]
+# ENTRYPOINT ["/usr/local/bin/pilot-agent"]
 
-# EXPOSE 40000
-# ENTRYPOINT ["/usr/local/bin/dlv", "--continue", "--accept-multiclient", "--listen=:40000", "--check-go-version=false", "--headless=true", "--api-version=2", "--log=true", "--log-output=debugger,debuglineerr,gdbwire,lldbout,rpc", "exec", "/usr/local/bin/pilot-agent", "--"]
+EXPOSE 40000
+ENTRYPOINT ["/usr/local/bin/dlv", "--continue", "--accept-multiclient", "--listen=:40000", "--check-go-version=false", "--headless=true", "--api-version=2", "--log=true", "--log-output=debugger,debuglineerr,gdbwire,lldbout,rpc", "exec", "/usr/local/bin/pilot-agent", "--"]

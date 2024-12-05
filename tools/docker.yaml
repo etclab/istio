@@ -33,6 +33,13 @@ images:
   - ${TARGET_OUT_LINUX}/${RELEASE_MODE}/${SIDECAR}
   targets:
   - ${TARGET_OUT_LINUX}/pilot-agent
+- name: proxyv2-dlv
+  dockerfile: pilot/docker/Dockerfile.proxyv2-dlv
+  files:
+  - tools/packaging/common/envoy_bootstrap.json
+  - ${TARGET_OUT_LINUX}/${RELEASE_MODE}/${SIDECAR}
+  targets:
+  - ${TARGET_OUT_LINUX}/pilot-agent
 - name: pilot
   dockerfile: pilot/docker/Dockerfile.pilot
   targets:

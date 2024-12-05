@@ -268,6 +268,17 @@ type Client interface {
 	GetRootCertBundle() ([]string, error)
 }
 
+type RBESecretManager interface {
+	GenerateWorkloadPublicParams()
+}
+
+type KCClient interface {
+	// TODO: two methods
+	// Register your id with the key curator
+	// GetUpdate from the key curator
+	Close()
+}
+
 // SecretManager defines secrets management interface which is used by SDS.
 type SecretManager interface {
 	// GenerateSecret generates new secret for the given resource.

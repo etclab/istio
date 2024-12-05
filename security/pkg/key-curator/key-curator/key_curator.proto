@@ -9,6 +9,7 @@ package keycurator;
 
 service KeyCurator {
 
+    rpc FetchId(IdRequest) returns (IdResponse) {}
     rpc FetchUpdate(UpdateRequest) returns (UpdateResponse) {}
     rpc FetchPublicParams(google.protobuf.Empty) returns (PublicParamsResponse) {}
     rpc RegisterUser(RegisterRequest) returns (RegisterResponse) {}
@@ -17,7 +18,15 @@ service KeyCurator {
     // after alice receives the pp -- she'll encrypt a message with id 1
     // there'll be a user with id 1 at server side -- alice will send the
     // encrypted message to the server to decrypt
-    rpc Decrypt(DecryptRequest) returns (google.protobuf.Empty) {}
+    // rpc Decrypt(DecryptRequest) returns (google.protobuf.Empty) {}
+}
+
+message IdRequest {
+    string serviceAccountName = 1;
+}
+
+message IdResponse {
+    int32 id = 1;
 }
 
 message Empty {}

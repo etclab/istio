@@ -151,7 +151,7 @@ type Server struct {
 	caServer         *caserver.Server
 	keyCuratorServer *keycurator.KeyCuratorServer
 
-	// TrustAnchors for workload to workload mTLS
+	// TrustAnchors for workload to workload mTLS // okay where is mTLS enforced
 	workloadTrustBundle *tb.TrustBundle
 	certMu              sync.RWMutex
 	istiodCert          *tls.Certificate
@@ -575,6 +575,7 @@ func (s *Server) initKubeClient(args *PilotArgs) error {
 		if err != nil {
 			return fmt.Errorf("failed creating kube client: %v", err)
 		}
+		// we're watching something finally
 		s.kubeClient = kubelib.EnableCrdWatcher(s.kubeClient)
 	}
 
@@ -1245,13 +1246,13 @@ func (s *Server) shouldStartNsController() bool {
 
 func (s *Server) startKeyCurator() {
 	// init key curator server
-	if s.keyCuratorServer == nil {
-		s.keyCuratorServer = keycurator.NewKeyCuratorServer(constants.MaxUsers)
-	}
+	// if s.keyCuratorServer == nil {
+	// }
+	s.keyCuratorServer = keycurator.NewKeyCuratorServer(constants.MaxUsers)
 
 	s.addStartFunc("key-curator", func(stop <-chan struct{}) error {
-		grpcServer := s.grpcServer
 		// todo: using unsecure grpc server for testing
+		grpcServer := s.grpcServer
 		// grpcServer := s.secureGrpcServer
 		// if s.secureGrpcServer == nil {
 		// 	grpcServer = s.grpcServer

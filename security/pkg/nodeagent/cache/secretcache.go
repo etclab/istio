@@ -82,6 +82,8 @@ const (
 type SecretManagerClient struct {
 	caClient security.Client
 
+	kcClient security.KCClient
+
 	// configOptions includes all configurable params for the cache.
 	configOptions *security.Options
 
@@ -240,6 +242,16 @@ func (sc *SecretManagerClient) getCachedSecret(resourceName string) (secret *sec
 		return ns
 	}
 	return nil
+}
+
+// this function does a few things -- based on RBE
+// generates a key pair for a workload
+// registers the workload's identity with the key curator
+// save the key pair, pp to the secret cache
+// TODO: doesn't handle key rotation and persistence for now
+func (sc *SecretManagerClient) GenerateWorkloadPublicParams() {
+
+	// return nil
 }
 
 // GenerateSecret passes the cached secret to SDS.StreamSecrets and SDS.FetchSecret.

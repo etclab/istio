@@ -26,9 +26,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/etclab/rbe"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/emptypb"
 
 	mesh "istio.io/api/mesh/v1alpha1"
 	"istio.io/istio/pilot/cmd/pilot-agent/config"
@@ -48,6 +50,11 @@ import (
 	"istio.io/istio/pkg/security"
 	"istio.io/istio/pkg/wasm"
 	"istio.io/istio/security/pkg/nodeagent/cache"
+	"istio.io/istio/security/pkg/nodeagent/kcclient"
+
+	bls "github.com/cloudflare/circl/ecc/bls12381"
+	rbeproto "github.com/etclab/rbe/proto"
+	pb "istio.io/istio/security/pkg/key-curator/key-curator"
 )
 
 const (
@@ -345,12 +352,32 @@ func (a *Agent) initializeEnvoyAgent(_ context.Context) error {
 	return nil
 }
 
+// figure out the args and return types
+func registerWorkloadAtKeyCurator() {
+
+}
+
+// mark
 // Run is a non-blocking call which returns either an error or a function to await for completion.
 func (a *Agent) Run(ctx context.Context) (func(), error) {
 	var err error
 	if err = a.initLocalDNSServer(); err != nil {
 		return nil, fmt.Errorf("failed to start local DNS server: %v", err)
 	}
+
+	// service account name is in Agent.secOpts.ServiceAccount
+	log.Infof("[dev] service account name: %s", a.secOpts.ServiceAccount)
+	// service node -- a node identifier used by Envoy is also unique for a workload
+	// has format: sidecar~10.244.0.107~ratings-v1-8785995fd-4mx8x.default~default.svc.cluster.local
+	log.Infof("[dev] service node name: %s", a.cfg.ServiceNode)
+
+	// my guess is because CA and keycurator are deployed in the same grpc server
+	// the CA endpoint should allow us to call the keycurator service as well
+	// the keycurator will be a different service deployed in the same grpc server
+	// CAEndpoint with port 15012 is the secure version of grpc server
+	// TODO: change key curator endpoint to secure port
+	kcEndpoint := strings.Replace(a.secOpts.CAEndpoint, "15012", "15010", 1)
+	log.Infof("[dev] key curator server endpoint is %s", kcEndpoint)
 
 	// There are a couple of things we have to do here
 	//
@@ -446,6 +473,24 @@ func (a *Agent) Run(ctx context.Context) (func(), error) {
 	return a.wg.Wait, nil
 }
 
+// returns id for a service account
+func getSAId(saName string) int {
+	id := -1
+	switch saName {
+	// case "bookinfo-details":
+	// 	id = 0
+	case "bookinfo-ratings":
+		id = 1
+	// case "bookinfo-reviews":
+	// 	id = 2
+	// case "bookinfo-productpage":
+	// 	id = 3
+	default:
+		id = -1
+	}
+	return id
+}
+
 func (a *Agent) initSdsServer() error {
 	var err error
 	if security.CheckWorkloadCertificate(security.WorkloadIdentityCertChainPath, security.WorkloadIdentityKeyPath, security.WorkloadIdentityRootCertPath) {
@@ -483,6 +528,76 @@ func (a *Agent) initSdsServer() error {
 		a.secretCache.RegisterSecretHandler(a.sdsServer.OnSecretUpdate)
 	}
 
+	// here
+	// get the rbe client, call the generate workload public params url
+	addr := strings.Replace(a.secOpts.CAEndpoint, "15012", "15010", 1)
+	kcClient, err := kcclient.NewKeyCuratorClient(addr)
+	if err != nil {
+		log.Errorf("[dev] failed to create key curator client: %v", err)
+	}
+
+	// call the register method
+	saName := a.secOpts.ServiceAccount
+	id := getSAId(saName)
+	log.Infof("[dev] id of client(%s) is %d\n", saName, id)
+
+	if id != -1 {
+		// get pp from key curator
+		ppr, err := kcClient.Client.FetchPublicParams(context.TODO(), &emptypb.Empty{})
+		if err != nil {
+			log.Errorf("[dev] err on FetchPublicParams: %v", err)
+		}
+		pp := new(rbe.PublicParams)
+		pp.FromProto(ppr.GetPp())
+
+		log.Infof("[dev] pp client: %v\n", pp)
+
+		// create user
+		user := rbe.NewUser(pp, int(id))
+
+		log.Infof("[dev] user: %+v\n", user)
+
+		xi := user.Xi()
+		xiProto := make([]*rbeproto.G1, len(xi))
+		for i, v := range xi {
+			if v == nil {
+				xiProto[i] = nil
+			} else {
+				xiProto[i] = &rbeproto.G1{Point: v.Bytes()}
+			}
+		}
+
+		regReq := &pb.RegisterRequest{
+			Id:        int32(id),
+			PublicKey: &rbeproto.G1{Point: user.PublicKey().Bytes()},
+			Xi:        xiProto,
+		}
+		log.Infof("[dev] register request: %v\n", regReq)
+
+		// register user and fetch openings
+		regR, err := kcClient.Client.RegisterUser(context.TODO(), regReq)
+		if err != nil {
+			log.Fatalf("[dev] err on RegisterUser(): %v", err)
+		}
+
+		commitments := []*bls.G1{}
+		for _, v := range regR.GetCommitments() {
+			g1 := new(bls.G1)
+			g1.SetBytes(v.GetPoint())
+			commitments = append(commitments, g1)
+		}
+
+		opening := []*bls.G1{}
+		for _, v := range regR.GetOpening() {
+			g1 := new(bls.G1)
+			g1.SetBytes(v.GetPoint())
+			opening = append(opening, g1)
+		}
+
+		user.Update(commitments, opening)
+
+		// TODO: think about adding the pp and certs to secret cache
+	}
 	return nil
 }
 
