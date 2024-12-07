@@ -37,8 +37,8 @@ func NewKeyCuratorServer(maxUsers int) *KeyCuratorServer {
 	pp := rbe.NewPublicParams(maxUsers)
 	kc := rbe.NewKeyCurator(pp)
 
-	// u := rbe.NewUser(pp, 1)
-	// kc.RegisterUser(1, u.PublicKey(), u.Xi())
+	// u := rbe.NewUser(pp, 0)
+	// kc.RegisterUser(0, u.PublicKey(), u.Xi())
 
 	// user := rbe.NewUser(pp, 1)
 	// log.Infof("[dev] user: %v\n", user)
@@ -77,38 +77,38 @@ func (kcs *KeyCuratorServer) FetchPublicParams(_ context.Context, in *emptypb.Em
 // 	return &emptypb.Empty{}, nil
 // }
 
-func (kcs *KeyCuratorServer) GetId(saName string) (int32, bool) {
-	kcs.mu.RLock()
-	defer kcs.mu.RUnlock()
+// func (kcs *KeyCuratorServer) GetId(saName string) (int32, bool) {
+// 	kcs.mu.RLock()
+// 	defer kcs.mu.RUnlock()
 
-	val, ok := kcs.userId[saName]
-	return val, ok
-}
+// 	val, ok := kcs.userId[saName]
+// 	return val, ok
+// }
 
-func (kcs *KeyCuratorServer) NewId(saName string) int32 {
-	kcs.mu.Lock()
-	defer kcs.mu.Unlock()
+// func (kcs *KeyCuratorServer) NewId(saName string) int32 {
+// 	kcs.mu.Lock()
+// 	defer kcs.mu.Unlock()
 
-	if id, exists := kcs.userId[saName]; exists {
-		return id
-	}
+// 	if id, exists := kcs.userId[saName]; exists {
+// 		return id
+// 	}
 
-	id := int32(len(kcs.userId) + 1)
-	kcs.userId[saName] = id
+// 	id := int32(len(kcs.userId) + 1)
+// 	kcs.userId[saName] = id
 
-	return id
-}
+// 	return id
+// }
 
-func (kcs *KeyCuratorServer) FetchId(_ context.Context, in *pb.IdRequest) (*pb.IdResponse, error) {
-	// if val, ok := kcs.GetId(in.GetServiceAccountName()); ok {
-	// 	return &pb.IdResponse{Id: val}, nil // return id of service account if exists
-	// } else {
-	id := kcs.NewId(in.GetServiceAccountName())
-	log.Infof("[dev] registered user with service account: %s with id: %d", in.GetServiceAccountName(), id)
-	log.Infof("[dev] user ids: %v", kcs.userId)
-	return &pb.IdResponse{Id: int32(id)}, nil
-	// }
-}
+// func (kcs *KeyCuratorServer) FetchId(_ context.Context, in *pb.IdRequest) (*pb.IdResponse, error) {
+// 	// if val, ok := kcs.GetId(in.GetServiceAccountName()); ok {
+// 	// 	return &pb.IdResponse{Id: val}, nil // return id of service account if exists
+// 	// } else {
+// 	id := kcs.NewId(in.GetServiceAccountName())
+// 	log.Infof("[dev] registered user with service account: %s with id: %d", in.GetServiceAccountName(), id)
+// 	log.Infof("[dev] user ids: %v", kcs.userId)
+// 	return &pb.IdResponse{Id: int32(id)}, nil
+// 	// }
+// }
 
 func (kcs *KeyCuratorServer) FetchUpdate(_ context.Context, in *pb.UpdateRequest) (*pb.UpdateResponse, error) {
 	id := int(in.GetId())
@@ -134,12 +134,20 @@ func (kcs *KeyCuratorServer) RegisterUser(_ context.Context, in *pb.RegisterRequ
 	publicKey := new(bls.G1)
 	publicKey.SetBytes(in.GetPublicKey().GetPoint())
 
+	log.Infof("[dev] public key %v", publicKey)
+
 	xi := make([]*bls.G1, len(in.GetXi()))
 	for i, v := range in.GetXi() {
-		xg1 := new(bls.G1)
-		xg1.SetBytes(v.GetPoint())
-		xi[i] = xg1
+		if len(v.GetPoint()) == 0 {
+			xi[i] = nil
+		} else {
+			xg1 := new(bls.G1)
+			xg1.SetBytes(v.GetPoint())
+			xi[i] = xg1
+		}
 	}
+
+	log.Infof("[dev] xi values %v", xi)
 
 	kcs.kc.RegisterUser(id, publicKey, xi)
 

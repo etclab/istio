@@ -139,6 +139,7 @@ type Agent struct {
 	secOpts   *security.Options
 	envoyOpts envoy.ProxyConfig
 
+	kcClient   *kcclient.KeyCuratorClient
 	envoyAgent *envoy.Agent
 
 	sdsServer   SDSService
@@ -474,17 +475,19 @@ func (a *Agent) Run(ctx context.Context) (func(), error) {
 }
 
 // returns id for a service account
+// to be replaced by hash() of identity tuple
+// allows only known app containers to register (not gateways)
 func getSAId(saName string) int {
 	id := -1
 	switch saName {
-	// case "bookinfo-details":
-	// 	id = 0
+	case "bookinfo-details":
+		id = 0
 	case "bookinfo-ratings":
 		id = 1
-	// case "bookinfo-reviews":
-	// 	id = 2
-	// case "bookinfo-productpage":
-	// 	id = 3
+	case "bookinfo-reviews":
+		id = 2
+	case "bookinfo-productpage":
+		id = 3
 	default:
 		id = -1
 	}
@@ -536,6 +539,8 @@ func (a *Agent) initSdsServer() error {
 		log.Errorf("[dev] failed to create key curator client: %v", err)
 	}
 
+	a.kcClient = kcClient
+
 	// call the register method
 	saName := a.secOpts.ServiceAccount
 	id := getSAId(saName)
@@ -558,6 +563,10 @@ func (a *Agent) initSdsServer() error {
 		log.Infof("[dev] user: %+v\n", user)
 
 		xi := user.Xi()
+
+		log.Infof("[dev] user xi: %v", user.Xi())
+		log.Infof("[dev] user public key: %v", user.PublicKey())
+
 		xiProto := make([]*rbeproto.G1, len(xi))
 		for i, v := range xi {
 			if v == nil {
@@ -596,7 +605,7 @@ func (a *Agent) initSdsServer() error {
 
 		user.Update(commitments, opening)
 
-		// TODO: think about adding the pp and certs to secret cache
+		// TODO: about adding the pp and certs to secret cache
 	}
 	return nil
 }
@@ -749,6 +758,9 @@ func (a *Agent) Close() {
 	}
 	if a.fileWatcher != nil {
 		_ = a.fileWatcher.Close()
+	}
+	if a.kcClient != nil {
+		a.kcClient.Close()
 	}
 }
 

@@ -9,7 +9,7 @@ package keycurator;
 
 service KeyCurator {
 
-    rpc FetchId(IdRequest) returns (IdResponse) {}
+    // rpc FetchId(IdRequest) returns (IdResponse) {}
     rpc FetchUpdate(UpdateRequest) returns (UpdateResponse) {}
     rpc FetchPublicParams(google.protobuf.Empty) returns (PublicParamsResponse) {}
     rpc RegisterUser(RegisterRequest) returns (RegisterResponse) {}
