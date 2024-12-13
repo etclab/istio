@@ -48,7 +48,9 @@ import (
 	"istio.io/istio/pkg/log"
 	"istio.io/istio/pkg/model"
 	"istio.io/istio/pkg/security"
+	"istio.io/istio/pkg/spiffe"
 	"istio.io/istio/pkg/wasm"
+	kcUtil "istio.io/istio/security/pkg/key-curator/util"
 	"istio.io/istio/security/pkg/nodeagent/cache"
 	"istio.io/istio/security/pkg/nodeagent/kcclient"
 
@@ -139,7 +141,8 @@ type Agent struct {
 	secOpts   *security.Options
 	envoyOpts envoy.ProxyConfig
 
-	kcClient   *kcclient.KeyCuratorClient
+	podPorts model.PodPortList // not needed
+
 	envoyAgent *envoy.Agent
 
 	sdsServer   SDSService
@@ -307,7 +310,7 @@ func (a *Agent) initializeEnvoyAgent(_ context.Context) error {
 		return fmt.Errorf("failed to generate bootstrap metadata: %v", err)
 	}
 
-	log.Infof("Pilot SAN: %v", node.Metadata.PilotSubjectAltName)
+	log.Infof("[dev] what else is in the node metadata: %+v", node.Metadata)
 
 	// Note: the cert checking still works, the generated file is updated if certs are changed.
 	// We just don't save the generated file, but use a custom one instead. Pilot will keep
@@ -474,24 +477,39 @@ func (a *Agent) Run(ctx context.Context) (func(), error) {
 	return a.wg.Wait, nil
 }
 
-// returns id for a service account
-// to be replaced by hash() of identity tuple
-// allows only known app containers to register (not gateways)
-func getSAId(saName string) int {
-	id := -1
-	switch saName {
-	case "bookinfo-details":
-		id = 0
-	case "bookinfo-ratings":
-		id = 1
-	case "bookinfo-reviews":
-		id = 2
-	case "bookinfo-productpage":
-		id = 3
-	default:
-		id = -1
+// this workload is a user in RBE
+// ID is first 16 bits of md5 hash of "spiff_id|ip|port|serial|timestamp"
+// save this nonce too -- this will be used for the second RBE identity
+func (a *Agent) getRbeUserId() (int32, string, int64, error) {
+	nonce, err := kcUtil.GenerateNonce()
+	if err != nil {
+		log.Errorf("[dev] failed to create nonce: %v", err)
+		return -1, "", 1, fmt.Errorf("failed to create nonce: %v", err)
 	}
-	return id
+
+	expTime := time.Now().Add(12 * time.Hour).Unix()
+
+	ip := a.envoyOpts.NodeIPs[0] // what does multiple IPs mean for a pod?
+
+	node, err := a.generateNodeMetadata()
+	if err != nil {
+		log.Errorf("failed to generate bootstrap metadata: %v", err)
+	}
+	podPort := node.Metadata.PodPorts[0]
+	port := podPort.ContainerPort // is there a default port?
+
+	spiffeId := &spiffe.Identity{
+		TrustDomain:    a.secOpts.TrustDomain,
+		Namespace:      a.secOpts.WorkloadNamespace,
+		ServiceAccount: a.secOpts.ServiceAccount,
+	}
+
+	idString := fmt.Sprintf("%s|%s|%d|%s|%d", spiffeId,
+		ip, port, nonce, expTime)
+
+	log.Infof("[dev] id string: %s", idString)
+
+	return kcUtil.IdStringToNumber(idString), nonce, expTime, nil
 }
 
 func (a *Agent) initSdsServer() error {
@@ -531,83 +549,53 @@ func (a *Agent) initSdsServer() error {
 		a.secretCache.RegisterSecretHandler(a.sdsServer.OnSecretUpdate)
 	}
 
-	// here
-	// get the rbe client, call the generate workload public params url
-	addr := strings.Replace(a.secOpts.CAEndpoint, "15012", "15010", 1)
-	kcClient, err := kcclient.NewKeyCuratorClient(addr)
-	if err != nil {
-		log.Errorf("[dev] failed to create key curator client: %v", err)
-	}
+	go func() {
+		a.getWorkloadRbeCerts(a.secretCache)
+	}()
 
-	a.kcClient = kcClient
-
-	// call the register method
-	saName := a.secOpts.ServiceAccount
-	id := getSAId(saName)
-	log.Infof("[dev] id of client(%s) is %d\n", saName, id)
-
-	if id != -1 {
-		// get pp from key curator
-		ppr, err := kcClient.Client.FetchPublicParams(context.TODO(), &emptypb.Empty{})
-		if err != nil {
-			log.Errorf("[dev] err on FetchPublicParams: %v", err)
-		}
-		pp := new(rbe.PublicParams)
-		pp.FromProto(ppr.GetPp())
-
-		log.Infof("[dev] pp client: %v\n", pp)
-
-		// create user
-		user := rbe.NewUser(pp, int(id))
-
-		log.Infof("[dev] user: %+v\n", user)
-
-		xi := user.Xi()
-
-		log.Infof("[dev] user xi: %v", user.Xi())
-		log.Infof("[dev] user public key: %v", user.PublicKey())
-
-		xiProto := make([]*rbeproto.G1, len(xi))
-		for i, v := range xi {
-			if v == nil {
-				xiProto[i] = nil
-			} else {
-				xiProto[i] = &rbeproto.G1{Point: v.Bytes()}
-			}
-		}
-
-		regReq := &pb.RegisterRequest{
-			Id:        int32(id),
-			PublicKey: &rbeproto.G1{Point: user.PublicKey().Bytes()},
-			Xi:        xiProto,
-		}
-		log.Infof("[dev] register request: %v\n", regReq)
-
-		// register user and fetch openings
-		regR, err := kcClient.Client.RegisterUser(context.TODO(), regReq)
-		if err != nil {
-			log.Fatalf("[dev] err on RegisterUser(): %v", err)
-		}
-
-		commitments := []*bls.G1{}
-		for _, v := range regR.GetCommitments() {
-			g1 := new(bls.G1)
-			g1.SetBytes(v.GetPoint())
-			commitments = append(commitments, g1)
-		}
-
-		opening := []*bls.G1{}
-		for _, v := range regR.GetOpening() {
-			g1 := new(bls.G1)
-			g1.SetBytes(v.GetPoint())
-			opening = append(opening, g1)
-		}
-
-		user.Update(commitments, opening)
-
-		// TODO: about adding the pp and certs to secret cache
-	}
 	return nil
+}
+
+// todos
+// how will the secretItem be different for rbe
+// - because in case of rbe there's two identities: the actual workload identity and serial rbe identity
+// - also the user commitments, openings, user object and public params need to be stored as/in a SecretItem
+func (a *Agent) getWorkloadRbeCerts(st *cache.SecretManagerClient) (*security.SecretItem, error) {
+	id, nonce, expTime, err := a.getRbeUserId()
+		if err != nil {
+		log.Errorf("[dev] failed to get rbe user id: %v", err)
+		}
+
+	b := backoff.NewExponentialBackOff(backoff.DefaultOption())
+	// This will loop forever until success
+	err = b.RetryWithContext(context.TODO(), func() error {
+		_, err := st.GenerateWorkloadRbeSecrets(id, nonce, expTime)
+		if err == nil {
+			return nil
+		}
+		log.Warnf("failed to get rbe certificate: %v", err)
+		return err
+	})
+		if err != nil {
+		return nil, err
+	}
+	return nil, nil
+
+	// // this is token for CA
+	// // platformCred, err := a.secOpts.CredFetcher.GetPlatformCredential()
+	// // if err != nil {
+	// // 	log.Errorf("[dev] failed to get platform credential: %v", err)
+	// // }
+	// // log.Infof("[dev] platform credential: %v\n", platformCred)
+
+	// // this is token for service account
+	// saToken := cniconsts.ServiceAccountPath + "/token"
+	// tokenPlugin := plugin.CreateTokenPlugin(saToken)
+	// token, err := tokenPlugin.GetPlatformCredential()
+	// if err != nil {
+	// 	log.Errorf("[dev] failed to get token: %v", err)
+	// }
+	// log.Infof("[dev] actual service account token: %v\n", token)
 }
 
 // getWorkloadCerts will attempt to get a cert, with infinite exponential backoff
@@ -940,7 +928,16 @@ func (a *Agent) newSecretManager() (*cache.SecretManagerClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	return cache.NewSecretManagerClient(caClient, a.secOpts)
+
+	kcClient, err := createKCClient(a.secOpts, a)
+	if err != nil {
+		return nil, err
+	}
+
+	sMClient, err := cache.NewSecretManagerClient(caClient, a.secOpts)
+	sMClient.SetKCClient(kcClient)
+
+	return sMClient, err
 }
 
 // GRPCBootstrapPath returns the most recently generated gRPC bootstrap or nil if there is none.

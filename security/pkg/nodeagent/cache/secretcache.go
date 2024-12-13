@@ -27,10 +27,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/etclab/rbe"
 	"github.com/fsnotify/fsnotify"
 
 	"istio.io/istio/pkg/backoff"
 	"istio.io/istio/pkg/file"
+	"istio.io/istio/pkg/log"
 	istiolog "istio.io/istio/pkg/log"
 	"istio.io/istio/pkg/queue"
 	"istio.io/istio/pkg/security"
@@ -82,7 +84,7 @@ const (
 type SecretManagerClient struct {
 	caClient security.Client
 
-	kcClient security.KCClient
+	kcClient security.KeyCuratorClient
 
 	// configOptions includes all configurable params for the cache.
 	configOptions *security.Options
@@ -93,6 +95,8 @@ type SecretManagerClient struct {
 	// Cache of workload certificate and root certificate. File based certs are never cached, as
 	// lookup is cheap.
 	cache secretCache
+
+	rbeCache secretRbeCache
 
 	// generateMutex ensures we do not send concurrent requests to generate a certificate
 	generateMutex sync.Mutex
@@ -125,6 +129,13 @@ type SecretManagerClient struct {
 type secretCache struct {
 	mu       sync.RWMutex
 	workload *security.SecretItem
+	certRoot []byte
+}
+
+type secretRbeCache struct {
+	mu       sync.RWMutex
+	workload *security.RbeSecretItem
+
 	certRoot []byte
 }
 
@@ -192,10 +203,17 @@ func NewSecretManagerClient(caClient security.Client, options *security.Options)
 	return ret, nil
 }
 
+func (sc *SecretManagerClient) SetKCClient(skc security.KeyCuratorClient) {
+	sc.kcClient = skc
+}
+
 func (sc *SecretManagerClient) Close() {
 	_ = sc.certWatcher.Close()
 	if sc.caClient != nil {
 		sc.caClient.Close()
+	}
+	if sc.kcClient != nil {
+		sc.kcClient.Close()
 	}
 	close(sc.stop)
 }
@@ -244,14 +262,68 @@ func (sc *SecretManagerClient) getCachedSecret(resourceName string) (secret *sec
 	return nil
 }
 
+// we'll have two secrets with resource names: serialRbe and identityRbe
+func (sc *SecretManagerClient) generateNewRbeSecret(resourceName string) (*security.SecretItem, error) {
+	// if sc.kcClient == nil {
+	// 	return nil, fmt.Errorf("attempted to fetch secret, but kc client is nil")
+	// }
+
+	return nil, nil
+}
+
+func (sc *SecretManagerClient) FetchPublicParams() {
+	pp, err := sc.kcClient.FetchPublicParams()
+	if err != nil {
+		log.Errorf("[dev] err on FetchPublicParams: %v", err)
+	}
+
+	log.Infof("[dev] pp client: %v\n", pp)
+}
+
 // this function does a few things -- based on RBE
 // generates a key pair for a workload
 // registers the workload's identity with the key curator
 // save the key pair, pp to the secret cache
 // TODO: doesn't handle key rotation and persistence for now
-func (sc *SecretManagerClient) GenerateWorkloadPublicParams() {
+func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(id int32, nonce string,
+	expireTime int64) (secret *security.RbeSecretItem, err error) {
+	cacheLog.Infof("generating workload rbe secrets")
 
-	// return nil
+	pp, err := sc.kcClient.FetchPublicParams()
+	if err != nil {
+		log.Errorf("[dev] err on FetchPublicParams: %v", err)
+	}
+
+	log.Infof("[dev] pp client: %v\n", pp)
+
+	// create user
+	user := rbe.NewUser(pp, int(id))
+
+	log.Infof("[dev] user: %+v\n", user)
+
+	commitments, opening, err := sc.kcClient.RegisterUser(user, id)
+	if err != nil {
+		log.Errorf("[dev] err on RegisterUser(): %v", err)
+		return nil, err
+	}
+
+	user.Update(commitments, opening)
+
+	// TODO: marshall all to bytes
+	rsi := &security.RbeSecretItem{
+		Certificate:  []byte{},
+		PrivateKey:   []byte{},
+		User:         []byte{},
+		PublicParams: []byte{},
+
+		ResourceName: security.WorkloadRbeIdentityCertResourceName,
+		CreatedTime:  time.Now(),
+		ExpireTime:   time.Unix(expireTime, 0),
+	}
+
+	// sc.registerSecret(*ns)
+
+	return rsi, nil
 }
 
 // GenerateSecret passes the cached secret to SDS.StreamSecrets and SDS.FetchSecret.

@@ -31,6 +31,7 @@ import (
 func NewSecurityOptions(proxyConfig *meshconfig.ProxyConfig, stsPort int, tokenManagerPlugin string) (*security.Options, error) {
 	o := &security.Options{
 		CAEndpoint:                           caEndpointEnv,
+		KCEndpoint:                           kcEndpointEnv,
 		CAProviderName:                       caProviderEnv,
 		PilotCertProvider:                    features.PilotCertProvider,
 		OutputKeyCertToDir:                   outputKeyCertToDir,
@@ -87,6 +88,11 @@ func SetupSecurityOptions(proxyConfig *meshconfig.ProxyConfig, secOpt *security.
 	if o.CAEndpoint == "" {
 		o.CAEndpoint = proxyConfig.DiscoveryAddress
 		o.CAEndpointSAN = istiodSAN.Get()
+	}
+
+	if o.KCEndpoint == "" {
+		o.KCEndpoint = proxyConfig.DiscoveryAddress
+		o.KCEndpointSAN = istiodSAN.Get()
 	}
 
 	o.CredIdentityProvider = credIdentityProvider

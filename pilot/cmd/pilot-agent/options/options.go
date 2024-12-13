@@ -68,6 +68,7 @@ var (
 
 	caProviderEnv = env.Register("CA_PROVIDER", "Citadel", "name of authentication provider").Get()
 	caEndpointEnv = env.Register("CA_ADDR", "", "Address of the spiffe certificate provider. Defaults to discoveryAddress").Get()
+	kcEndpointEnv = env.Register("KC_ADDR", "", "Address of the key curator. Defaults to discoveryAddress").Get()
 
 	trustDomainEnv = env.Register("TRUST_DOMAIN", "cluster.local",
 		"The trust domain for spiffe certificates").Get()
