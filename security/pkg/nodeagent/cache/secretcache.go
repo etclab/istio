@@ -19,6 +19,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509/pkix"
+	"encoding/asn1"
 	"fmt"
 	"math/rand/v2"
 	"os"
@@ -38,6 +40,7 @@ import (
 	"istio.io/istio/pkg/security"
 	"istio.io/istio/pkg/spiffe"
 	"istio.io/istio/pkg/util/sets"
+	kcUtil "istio.io/istio/security/pkg/key-curator/util"
 	"istio.io/istio/security/pkg/monitoring"
 	nodeagentutil "istio.io/istio/security/pkg/nodeagent/util"
 	pkiutil "istio.io/istio/security/pkg/pki/util"
@@ -94,9 +97,11 @@ type SecretManagerClient struct {
 
 	// Cache of workload certificate and root certificate. File based certs are never cached, as
 	// lookup is cheap.
-	cache secretCache
-
-	rbeCache secretRbeCache
+	cache            secretCache
+	rbeCache         rbeSecretCache
+	rbeSecretHandler func(resourceName string)
+	rbeUpdateHandler func(resourceName string)
+	rbeCertMutex     sync.RWMutex
 
 	// generateMutex ensures we do not send concurrent requests to generate a certificate
 	generateMutex sync.Mutex
@@ -132,11 +137,24 @@ type secretCache struct {
 	certRoot []byte
 }
 
-type secretRbeCache struct {
+type rbeSecretCache struct {
 	mu       sync.RWMutex
 	workload *security.RbeSecretItem
+}
 
-	certRoot []byte
+func (s *rbeSecretCache) GetWorkload() *security.RbeSecretItem {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.workload == nil {
+		return nil
+	}
+	return s.workload
+}
+
+func (s *rbeSecretCache) SetWorkload(value *security.RbeSecretItem) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.workload = value
 }
 
 // GetRoot returns cached root cert and cert expiration time. This method is thread safe.
@@ -203,6 +221,7 @@ func NewSecretManagerClient(caClient security.Client, options *security.Options)
 	return ret, nil
 }
 
+// TODO: find alt way to do this
 func (sc *SecretManagerClient) SetKCClient(skc security.KeyCuratorClient) {
 	sc.kcClient = skc
 }
@@ -222,6 +241,39 @@ func (sc *SecretManagerClient) RegisterSecretHandler(h func(resourceName string)
 	sc.certMutex.Lock()
 	defer sc.certMutex.Unlock()
 	sc.secretHandler = h
+}
+
+// registers a function to fetch updates from the key curator
+func (sc *SecretManagerClient) RegisterRbeUpdateHandler(h func(resourceName string)) {
+	sc.rbeCertMutex.Lock()
+	defer sc.rbeCertMutex.Unlock()
+
+	sc.rbeUpdateHandler = h
+}
+
+func (sc *SecretManagerClient) RegisterRbeSecretHandler(h func(resourceName string)) {
+	sc.rbeCertMutex.Lock()
+	defer sc.rbeCertMutex.Unlock()
+
+	sc.rbeSecretHandler = h
+}
+
+func (sc *SecretManagerClient) OnRbeOpeningsUpdate(resourceName string) {
+	sc.rbeCertMutex.RLock()
+	defer sc.rbeCertMutex.RUnlock()
+
+	if sc.rbeUpdateHandler != nil {
+		sc.rbeUpdateHandler(resourceName)
+	}
+}
+
+func (sc *SecretManagerClient) OnRbeSecretUpdate(resourceName string) {
+	sc.rbeCertMutex.RLock()
+	defer sc.rbeCertMutex.RUnlock()
+
+	if sc.rbeSecretHandler != nil {
+		sc.rbeSecretHandler(resourceName)
+	}
 }
 
 func (sc *SecretManagerClient) OnSecretUpdate(resourceName string) {
@@ -262,44 +314,84 @@ func (sc *SecretManagerClient) getCachedSecret(resourceName string) (secret *sec
 	return nil
 }
 
-// we'll have two secrets with resource names: serialRbe and identityRbe
-func (sc *SecretManagerClient) generateNewRbeSecret(resourceName string) (*security.SecretItem, error) {
-	// if sc.kcClient == nil {
-	// 	return nil, fmt.Errorf("attempted to fetch secret, but kc client is nil")
-	// }
+func (sc *SecretManagerClient) getRbeCachedSecret(resourceName string) (secret *security.RbeSecretItem) {
+	var ns *security.RbeSecretItem
 
-	return nil, nil
+	if c := sc.rbeCache.GetWorkload(); c != nil {
+		ns = &security.RbeSecretItem{
+			Certificate: c.Certificate,
+			PrivateKey:  c.PrivateKey,
+			User:        c.User,
+
+			ResourceName: resourceName,
+			CreatedTime:  c.CreatedTime,
+			ExpireTime:   c.ExpireTime,
+		}
+
+		cacheLog.WithLabels("ttl", time.Until(c.ExpireTime)).Info("returned workload certificate from cache")
+
+		return ns
+	}
+	return nil
 }
 
-func (sc *SecretManagerClient) FetchPublicParams() {
-	pp, err := sc.kcClient.FetchPublicParams()
+func (sc *SecretManagerClient) UpdateUserOpenings() {
+	rbeSecret := sc.getRbeCachedSecret(security.WorkloadRbeIdentityCertResourceName)
+
+	if rbeSecret != nil {
+		id := int32(rbeSecret.User.Id())
+
+		commitments, opening, err := sc.kcClient.FetchUpdate(id)
 	if err != nil {
-		log.Errorf("[dev] err on FetchPublicParams: %v", err)
+			log.Errorf("[dev] err on FetchUpdate(): %v", err)
+		}
+		log.Infof("[dev] got the commitments (%d) and opening (%d) for user: %d", len(commitments), len(opening), id)
+
+		rbeSecret.User.Update(commitments, opening)
+		sc.rbeCache.SetWorkload(rbeSecret)
+	} else {
+		log.Infof("[dev] no cached rbe secret\n")
 	}
 
-	log.Infof("[dev] pp client: %v\n", pp)
+	// fetch updates once new nodes register with key curator (or k8s)
+	delaySeconds := 60
+	delay := time.Duration(delaySeconds) * time.Second
+	log.Infof("[dev] inside UpdateUserOpenings() -- will call again in %d seconds", delaySeconds)
+
+	sc.queue.PushDelayed(func() error {
+		if cached := sc.rbeCache.GetWorkload(); cached != nil {
+			sc.OnRbeOpeningsUpdate(cached.ResourceName)
 }
+		return nil
+	}, delay)
+}
+
+// 1.3.6.1.4.1.9901
+var (
+	AdminTokenOID = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 9901, 33}
+	SpiffeIdOID   = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 9901, 34}
+	SerialOID     = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 9901, 35}
+	SignatureOID  = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 9901, 36}
+	PodUidOID     = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 9901, 37}
+)
 
 // this function does a few things -- based on RBE
 // generates a key pair for a workload
 // registers the workload's identity with the key curator
 // save the key pair, pp to the secret cache
 // TODO: doesn't handle key rotation and persistence for now
-func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(id int32, nonce string,
-	expireTime int64) (secret *security.RbeSecretItem, err error) {
-	cacheLog.Infof("generating workload rbe secrets")
+func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(rbeId *kcUtil.RbeId) (secret *security.RbeSecretItem, err error) {
+	cacheLog.Infof("[dev] generating workload rbe secrets")
 
 	pp, err := sc.kcClient.FetchPublicParams()
 	if err != nil {
 		log.Errorf("[dev] err on FetchPublicParams: %v", err)
 	}
 
-	log.Infof("[dev] pp client: %v\n", pp)
-
+	id := rbeId.ToNumber()
+	expireTime := rbeId.ExpireTime
 	// create user
 	user := rbe.NewUser(pp, int(id))
-
-	log.Infof("[dev] user: %+v\n", user)
 
 	commitments, opening, err := sc.kcClient.RegisterUser(user, id)
 	if err != nil {
@@ -309,19 +401,69 @@ func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(id int32, nonce string
 
 	user.Update(commitments, opening)
 
-	// TODO: marshall all to bytes
+	adminToken, err := kcUtil.GetPlatformCredential()
+	if err != nil {
+		log.Errorf("[dev] err on GetPlatformCredential(): %v", err)
+		return nil, err
+	}
+
+	extensions := []pkix.Extension{
+		{
+			Id:    AdminTokenOID,
+			Value: []byte(adminToken),
+		},
+		{
+			Id:    SpiffeIdOID,
+			Value: []byte(rbeId.SpiffeId.String()),
+		},
+		{
+			Id:    SerialOID,
+			Value: []byte(rbeId.Nonce),
+		},
+		{
+			Id:    SignatureOID,
+			Value: []byte("signed"),
+		},
+		{
+			Id:    PodUidOID,
+			Value: []byte(rbeId.PodUid),
+		},
+	}
+
+	options := pkiutil.CertOptions{
+		Host:       rbeId.SpiffeId.String(),
+		RSAKeySize: sc.configOptions.WorkloadRSAKeySize,
+		PKCS8Key:   sc.configOptions.Pkcs8Keys,
+		ECSigAlg:   pkiutil.SupportedECSignatureAlgorithms(sc.configOptions.ECCSigAlg),
+		ECCCurve:   pkiutil.SupportedEllipticCurves(sc.configOptions.ECCCurve),
+
+		IsSelfSigned: true,
+		IsClient:     true,
+		IsServer:     true,
+
+		Extensions: extensions,
+	}
+
+	pemCert, pemKey, err := pkiutil.GenCertKeyFromOptions(options)
+	if err != nil {
+		log.Errorf("[dev] err on GenCertKeyFromOptions(): %v", err)
+		return nil, err
+	}
+
+	log.Infof("[dev] certificate bytes:\n %s", string(pemCert[:]))
+
+	// TODO: can I store these in a file and access them in envoy?
 	rsi := &security.RbeSecretItem{
-		Certificate:  []byte{},
-		PrivateKey:   []byte{},
-		User:         []byte{},
-		PublicParams: []byte{},
+		Certificate: pemCert,
+		PrivateKey:  pemKey, // private key for certificate
+		User:        user,   // user includes the rbe public-private key pair
 
 		ResourceName: security.WorkloadRbeIdentityCertResourceName,
 		CreatedTime:  time.Now(),
 		ExpireTime:   time.Unix(expireTime, 0),
 	}
 
-	// sc.registerSecret(*ns)
+	sc.registerRbeSecret(*rsi)
 
 	return rsi, nil
 }
@@ -733,7 +875,7 @@ func (sc *SecretManagerClient) generateNewSecret(resourceName string) (*security
 	}, nil
 }
 
-var rotateTime = func(secret security.SecretItem, graceRatio float64, graceRatioJitter float64) time.Duration {
+var rotateTimeUtil = func(createdTime, expireTime time.Time, graceRatio float64, graceRatioJitter float64) time.Duration {
 	// stagger rotation times to prevent large fleets of clients from renewing at the same moment.
 	jitter := (rand.Float64() * graceRatioJitter) * float64(rand.IntN(2)*2-1) // #nosec G404 -- crypto/rand not worth the cost
 	jitterGraceRatio := graceRatio + jitter
@@ -743,15 +885,54 @@ var rotateTime = func(secret security.SecretItem, graceRatio float64, graceRatio
 	if jitterGraceRatio < 0 {
 		jitterGraceRatio = 0
 	}
-	secretLifeTime := secret.ExpireTime.Sub(secret.CreatedTime)
+	secretLifeTime := expireTime.Sub(createdTime)
 	gracePeriod := time.Duration((jitterGraceRatio) * float64(secretLifeTime))
-	delay := time.Until(secret.ExpireTime.Add(-gracePeriod))
+	delay := time.Until(expireTime.Add(-gracePeriod))
 	if delay < 0 {
 		delay = 0
 	}
 	return delay
 }
 
+var rotateTime = func(secret security.SecretItem, graceRatio float64, graceRatioJitter float64) time.Duration {
+	return rotateTimeUtil(secret.CreatedTime, secret.ExpireTime, graceRatio, graceRatioJitter)
+}
+
+var rotateRbeTime = func(secret security.RbeSecretItem, graceRatio float64, graceRatioJitter float64) time.Duration {
+	return rotateTimeUtil(secret.CreatedTime, secret.ExpireTime, graceRatio, graceRatioJitter)
+}
+
+// how does rotation work? - there's a rotation handler function
+// how do I customize the rotation? -- is it going to call the same method for rotation: GenerateRbe
+func (sc *SecretManagerClient) registerRbeSecret(item security.RbeSecretItem) {
+	delay := rotateRbeTime(item, sc.configOptions.SecretRotationGracePeriodRatio, sc.configOptions.SecretRotationGracePeriodRatioJitter)
+
+	item.ResourceName = security.WorkloadRbeIdentityCertResourceName
+	// In case there are two calls to GenerateSecret at once, we don't want both to be concurrently registered
+	if sc.rbeCache.GetWorkload() != nil {
+		resourceLog(item.ResourceName).Infof("skip scheduling certificate rotation, already scheduled")
+		return
+	}
+	sc.rbeCache.SetWorkload(&item)
+	resourceLog(item.ResourceName).Debugf("scheduled certificate for rotation in %v", delay)
+	certExpirySeconds.ValueFrom(func() float64 { return time.Until(item.ExpireTime).Seconds() }, ResourceName.Value(item.ResourceName))
+	sc.queue.PushDelayed(func() error {
+		// In case `UpdateConfigTrustBundle` called, it will resign workload cert.
+		// Check if this is a stale scheduled rotating task.
+		log.Infof("[dev] inside sc.queue.PushDelayed -- will call this every %d seconds", delay)
+		if cached := sc.rbeCache.GetWorkload(); cached != nil {
+			if cached.CreatedTime == item.CreatedTime {
+				resourceLog(item.ResourceName).Debugf("rotating certificate")
+				// Clear the cache so the next call generates a fresh certificate
+				sc.rbeCache.SetWorkload(nil)
+				sc.OnRbeSecretUpdate(item.ResourceName)
+			}
+		}
+		return nil
+	}, delay)
+}
+
+// mark
 func (sc *SecretManagerClient) registerSecret(item security.SecretItem) {
 	delay := rotateTime(item, sc.configOptions.SecretRotationGracePeriodRatio, sc.configOptions.SecretRotationGracePeriodRatioJitter)
 	item.ResourceName = security.WorkloadKeyCertResourceName

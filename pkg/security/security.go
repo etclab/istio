@@ -282,17 +282,11 @@ type KeyCuratorClient interface {
 	Close()
 	FetchPublicParams() (*rbe.PublicParams, error)
 	RegisterUser(*rbe.User, int32) ([]*bls.G1, []*bls.G1, error)
+	FetchUpdate(int32) ([]*bls.G1, []*bls.G1, error)
 }
 
 type RBESecretManager interface {
 	GenerateWorkloadPublicParams()
-}
-
-type KCClient interface {
-	// TODO: two methods
-	// Register your id with the key curator
-	// GetUpdate from the key curator
-	Close()
 }
 
 // SecretManager defines secrets management interface which is used by SDS.
@@ -323,10 +317,9 @@ type SecretItem struct {
 }
 
 type RbeSecretItem struct {
-	Certificate  []byte
-	PrivateKey   []byte
-	User         []byte
-	PublicParams []byte
+	Certificate []byte
+	PrivateKey  []byte
+	User        *rbe.User
 
 	ResourceName string // rbeIdentity
 	CreatedTime  time.Time

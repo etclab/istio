@@ -25,7 +25,7 @@ var kcClientLog = log.RegisterScope("kcclient", "key curator client debugging")
 
 // note: using the same structure as citadel client
 type KCClient struct {
-	// It means enable tls connection to Citadel if this is not nil.
+	// It means enable tls connection to key curator if this is not nil.
 	tlsOpts  *TLSOptions
 	client   pb.KeyCuratorClient
 	conn     *grpc.ClientConn
@@ -37,24 +37,6 @@ type TLSOptions struct {
 	RootCert string
 	Key      string
 	Cert     string
-}
-
-// NewCitadelClient create a CA client for Citadel.
-func NewCitadelClient(opts *security.Options, tlsOpts *TLSOptions) (*KCClient, error) {
-	c := &KCClient{
-		tlsOpts:  tlsOpts,
-		opts:     opts,
-		provider: caclient.NewDefaultTokenProvider(opts),
-	}
-
-	conn, err := c.buildConnection()
-	if err != nil {
-		kcClientLog.Errorf("Failed to connect to endpoint %s: %v", opts.CAEndpoint, err)
-		return nil, fmt.Errorf("failed to connect to endpoint %s", opts.CAEndpoint)
-	}
-	c.conn = conn
-	c.client = pb.NewKeyCuratorClient(conn)
-	return c, nil
 }
 
 func (c *KCClient) Close() {
@@ -96,6 +78,7 @@ func (c *KCClient) buildConnection() (*grpc.ClientConn, error) {
 	return conn, nil
 }
 
+// TODO: if there's an error rebuild the connection -- see how errors are handled in Citadel client
 func (c *KCClient) reconnect() error {
 	if err := c.conn.Close(); err != nil {
 		return fmt.Errorf("failed to close connection: %v", err)
@@ -128,11 +111,44 @@ func NewKCClient(opts *security.Options, tlsOpts *TLSOptions) (security.KeyCurat
 	return c, nil
 }
 
+func (c *KCClient) FetchUpdate(id int32) ([]*bls.G1, []*bls.G1, error) {
+	updReq := &pb.UpdateRequest{
+		Id: id,
+	}
+
+	ctx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs("ClusterID", c.opts.ClusterID))
+	updResp, err := c.client.FetchUpdate(ctx, updReq)
+	if err != nil {
+		log.Errorf("[dev] err on FetchUpdate(): %v", err)
+		return nil, nil, err
+	}
+
+	commitments, opening := getCommitmentsOpenings(updResp)
+
+	return commitments, opening, nil
+}
+
+func getCommitmentsOpenings(uoResp *pb.UserOpeningResponse) ([]*bls.G1, []*bls.G1) {
+
+	commitments := []*bls.G1{}
+	for _, v := range uoResp.GetCommitments() {
+		g1 := new(bls.G1)
+		g1.SetBytes(v.GetPoint())
+		commitments = append(commitments, g1)
+	}
+
+	opening := []*bls.G1{}
+	for _, v := range uoResp.GetOpening() {
+		g1 := new(bls.G1)
+		g1.SetBytes(v.GetPoint())
+		opening = append(opening, g1)
+	}
+
+	return commitments, opening
+}
+
 func (c *KCClient) RegisterUser(user *rbe.User, id int32) ([]*bls.G1, []*bls.G1, error) {
 	xi := user.Xi()
-
-	log.Infof("[dev] user xi: %v", user.Xi())
-	log.Infof("[dev] user public key: %v", user.PublicKey())
 
 	xiProto := make([]*rbeproto.G1, len(xi))
 	for i, v := range xi {
@@ -148,7 +164,6 @@ func (c *KCClient) RegisterUser(user *rbe.User, id int32) ([]*bls.G1, []*bls.G1,
 		PublicKey: &rbeproto.G1{Point: user.PublicKey().Bytes()},
 		Xi:        xiProto,
 	}
-	log.Infof("[dev] register request: %v\n", regReq)
 
 	ctx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs("ClusterID", c.opts.ClusterID))
 	// register user and fetch openings
@@ -157,20 +172,7 @@ func (c *KCClient) RegisterUser(user *rbe.User, id int32) ([]*bls.G1, []*bls.G1,
 		log.Errorf("[dev] err on RegisterUser(): %v", err)
 		return nil, nil, err
 	}
-
-	commitments := []*bls.G1{}
-	for _, v := range regR.GetCommitments() {
-		g1 := new(bls.G1)
-		g1.SetBytes(v.GetPoint())
-		commitments = append(commitments, g1)
-	}
-
-	opening := []*bls.G1{}
-	for _, v := range regR.GetOpening() {
-		g1 := new(bls.G1)
-		g1.SetBytes(v.GetPoint())
-		opening = append(opening, g1)
-	}
+	commitments, opening := getCommitmentsOpenings(regR)
 
 	return commitments, opening, nil
 }

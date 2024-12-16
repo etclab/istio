@@ -8,25 +8,9 @@ import "google/protobuf/empty.proto";
 package keycurator;
 
 service KeyCurator {
-
-    // rpc FetchId(IdRequest) returns (IdResponse) {}
-    rpc FetchUpdate(UpdateRequest) returns (UpdateResponse) {}
+    rpc FetchUpdate(UpdateRequest) returns (UserOpeningResponse) {}
     rpc FetchPublicParams(google.protobuf.Empty) returns (PublicParamsResponse) {}
-    rpc RegisterUser(RegisterRequest) returns (RegisterResponse) {}
-    
-    // todo: remove this later
-    // after alice receives the pp -- she'll encrypt a message with id 1
-    // there'll be a user with id 1 at server side -- alice will send the
-    // encrypted message to the server to decrypt
-    // rpc Decrypt(DecryptRequest) returns (google.protobuf.Empty) {}
-}
-
-message IdRequest {
-    string serviceAccountName = 1;
-}
-
-message IdResponse {
-    int32 id = 1;
+    rpc RegisterUser(RegisterRequest) returns (UserOpeningResponse) {}
 }
 
 message Empty {}
@@ -41,22 +25,11 @@ message RegisterRequest {
     repeated rbe.proto.G1 xi = 3;
 }
 
-message RegisterResponse {
+message UserOpeningResponse {
     repeated rbe.proto.G1 commitments = 1; 
     repeated rbe.proto.G1 opening = 2; 
 }
 
 message UpdateRequest {
     int32 id = 1;
-}
-
-// same as RegisterResponse
-message UpdateResponse {
-    repeated rbe.proto.G1 commitments = 1; 
-    repeated rbe.proto.G1 opening = 2; 
-}
-
-message DecryptRequest {
-    int32 id = 1;
-    rbe.proto.Ciphertext ciphertext = 2;
 }

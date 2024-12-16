@@ -29,10 +29,9 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type KeyCuratorClient interface {
-	// rpc FetchId(IdRequest) returns (IdResponse) {}
-	FetchUpdate(ctx context.Context, in *UpdateRequest, opts ...grpc.CallOption) (*UpdateResponse, error)
+	FetchUpdate(ctx context.Context, in *UpdateRequest, opts ...grpc.CallOption) (*UserOpeningResponse, error)
 	FetchPublicParams(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*PublicParamsResponse, error)
-	RegisterUser(ctx context.Context, in *RegisterRequest, opts ...grpc.CallOption) (*RegisterResponse, error)
+	RegisterUser(ctx context.Context, in *RegisterRequest, opts ...grpc.CallOption) (*UserOpeningResponse, error)
 }
 
 type keyCuratorClient struct {
@@ -43,9 +42,9 @@ func NewKeyCuratorClient(cc grpc.ClientConnInterface) KeyCuratorClient {
 	return &keyCuratorClient{cc}
 }
 
-func (c *keyCuratorClient) FetchUpdate(ctx context.Context, in *UpdateRequest, opts ...grpc.CallOption) (*UpdateResponse, error) {
+func (c *keyCuratorClient) FetchUpdate(ctx context.Context, in *UpdateRequest, opts ...grpc.CallOption) (*UserOpeningResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(UpdateResponse)
+	out := new(UserOpeningResponse)
 	err := c.cc.Invoke(ctx, KeyCurator_FetchUpdate_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -63,9 +62,9 @@ func (c *keyCuratorClient) FetchPublicParams(ctx context.Context, in *emptypb.Em
 	return out, nil
 }
 
-func (c *keyCuratorClient) RegisterUser(ctx context.Context, in *RegisterRequest, opts ...grpc.CallOption) (*RegisterResponse, error) {
+func (c *keyCuratorClient) RegisterUser(ctx context.Context, in *RegisterRequest, opts ...grpc.CallOption) (*UserOpeningResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(RegisterResponse)
+	out := new(UserOpeningResponse)
 	err := c.cc.Invoke(ctx, KeyCurator_RegisterUser_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -77,10 +76,9 @@ func (c *keyCuratorClient) RegisterUser(ctx context.Context, in *RegisterRequest
 // All implementations must embed UnimplementedKeyCuratorServer
 // for forward compatibility.
 type KeyCuratorServer interface {
-	// rpc FetchId(IdRequest) returns (IdResponse) {}
-	FetchUpdate(context.Context, *UpdateRequest) (*UpdateResponse, error)
+	FetchUpdate(context.Context, *UpdateRequest) (*UserOpeningResponse, error)
 	FetchPublicParams(context.Context, *emptypb.Empty) (*PublicParamsResponse, error)
-	RegisterUser(context.Context, *RegisterRequest) (*RegisterResponse, error)
+	RegisterUser(context.Context, *RegisterRequest) (*UserOpeningResponse, error)
 	mustEmbedUnimplementedKeyCuratorServer()
 }
 
@@ -91,13 +89,13 @@ type KeyCuratorServer interface {
 // pointer dereference when methods are called.
 type UnimplementedKeyCuratorServer struct{}
 
-func (UnimplementedKeyCuratorServer) FetchUpdate(context.Context, *UpdateRequest) (*UpdateResponse, error) {
+func (UnimplementedKeyCuratorServer) FetchUpdate(context.Context, *UpdateRequest) (*UserOpeningResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method FetchUpdate not implemented")
 }
 func (UnimplementedKeyCuratorServer) FetchPublicParams(context.Context, *emptypb.Empty) (*PublicParamsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method FetchPublicParams not implemented")
 }
-func (UnimplementedKeyCuratorServer) RegisterUser(context.Context, *RegisterRequest) (*RegisterResponse, error) {
+func (UnimplementedKeyCuratorServer) RegisterUser(context.Context, *RegisterRequest) (*UserOpeningResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RegisterUser not implemented")
 }
 func (UnimplementedKeyCuratorServer) mustEmbedUnimplementedKeyCuratorServer() {}
