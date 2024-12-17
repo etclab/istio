@@ -314,7 +314,7 @@ func (sc *SecretManagerClient) getCachedSecret(resourceName string) (secret *sec
 	return nil
 }
 
-func (sc *SecretManagerClient) getRbeCachedSecret(resourceName string) (secret *security.RbeSecretItem) {
+func (sc *SecretManagerClient) GetRbeCachedSecret(resourceName string) (secret *security.RbeSecretItem) {
 	var ns *security.RbeSecretItem
 
 	if c := sc.rbeCache.GetWorkload(); c != nil {
@@ -328,7 +328,7 @@ func (sc *SecretManagerClient) getRbeCachedSecret(resourceName string) (secret *
 			ExpireTime:   c.ExpireTime,
 		}
 
-		cacheLog.WithLabels("ttl", time.Until(c.ExpireTime)).Info("returned workload certificate from cache")
+		cacheLog.WithLabels("ttl", time.Until(c.ExpireTime)).Info("returned workload rbe secret/certificate from cache")
 
 		return ns
 	}
@@ -336,7 +336,7 @@ func (sc *SecretManagerClient) getRbeCachedSecret(resourceName string) (secret *
 }
 
 func (sc *SecretManagerClient) UpdateUserOpenings() {
-	rbeSecret := sc.getRbeCachedSecret(security.WorkloadRbeIdentityCertResourceName)
+	rbeSecret := sc.GetRbeCachedSecret(security.WorkloadRbeIdentityCertResourceName)
 
 	if rbeSecret != nil {
 		id := int32(rbeSecret.User.Id())

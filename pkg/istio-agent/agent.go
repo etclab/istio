@@ -370,14 +370,6 @@ func (a *Agent) Run(ctx context.Context) (func(), error) {
 	// has format: sidecar~10.244.0.107~ratings-v1-8785995fd-4mx8x.default~default.svc.cluster.local
 	log.Infof("[dev] service node name: %s", a.cfg.ServiceNode)
 
-	// my guess is because CA and keycurator are deployed in the same grpc server
-	// the CA endpoint should allow us to call the keycurator service as well
-	// the keycurator will be a different service deployed in the same grpc server
-	// CAEndpoint with port 15012 is the secure version of grpc server
-	// TODO: change key curator endpoint to secure port
-	kcEndpoint := strings.Replace(a.secOpts.CAEndpoint, "15012", "15010", 1)
-	log.Infof("[dev] key curator server endpoint is %s", kcEndpoint)
-
 	// There are a couple of things we have to do here
 	//
 	// 1. Use a custom SDS workload socket if one is found+healthy at the configured path
