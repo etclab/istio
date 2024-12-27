@@ -1,3 +1,19 @@
+- Getting the TokenReview from k8s API
+    - set `TOKEN=eyz...`
+    - Run to get the token review response
+        ```
+        kubectl create --raw /apis/authentication.k8s.io/v1/tokenreviews -f - <<EOF
+        {
+        "apiVersion": "authentication.k8s.io/v1",
+        "kind": "TokenReview",
+        "spec": {
+            "token": "$TOKEN",
+            "audiences": ["https://kubernetes.default.svc"]
+        }
+        }
+        EOF
+        ```
+
 - Cmd for adding types from `etclab/rbe/proto/rbe.proto`
     - Inside `security/pkg/key-curator` download the `rbe.proto` from rbe repo: `wget https://raw.githubusercontent.com/etclab/rbe/refs/heads/proto/proto/rbe.proto -O rbeproto/rbe.proto`
     - Generate with: `protoc --go_out=. --go_opt=paths=source_relative rbeproto/rbe.proto`
