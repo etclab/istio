@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"os"
 
 	"github.com/golang-jwt/jwt/v5"
 	"k8s.io/client-go/kubernetes"
@@ -16,6 +17,7 @@ import (
 	"istio.io/istio/pkg/log"
 	"istio.io/istio/pkg/spiffe"
 	"istio.io/istio/security/pkg/credentialfetcher/plugin"
+	authenticationv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -59,7 +61,9 @@ func GenerateNonce() (string, error) {
 }
 
 // returns the admin token
-// TODO: how do I verify the token? with TokenReview API?
+// how do I verify the token?
+// 1) with TokenReview API -- needs TokenReview:create api permission
+// 2) with ca.crt placed inside /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
 func GetPlatformCredential() (string, error) {
 	saToken := cniconsts.ServiceAccountPath + "/token"
 
@@ -72,8 +76,60 @@ func GetPlatformCredential() (string, error) {
 	return token, nil
 }
 
-// TODO: there should be better way to get pod name and uid
-// TODO: pod name is easily accessed via node.Metadata.InstanceName
+// returns the ca.crt as []byte
+func GetPlatformCert() (interface{}, error) {
+	caCrt := cniconsts.ServiceAccountPath + "/ca.crt"
+	cert, err := os.ReadFile(caCrt)
+	if err != nil {
+		log.Errorf("[dev] failed to read ca.crt: %v", err)
+		return []byte{}, err
+	}
+	return cert, nil
+}
+
+// verifies the service account token and returns the claims
+// needs TokenReview:create api permission to verify the token
+// see ./dev/cluster-role.yaml and ./dev/cluster-role-binding.yaml
+func VerifyServiceAccountToken(token string) error {
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		log.Errorf("[dev] failed to get in-cluster config: %v", err)
+		return fmt.Errorf("[dev] failed to get in-cluster config: %v", err)
+	}
+
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		log.Errorf("[dev] failed to create clientset: %v", err)
+		return fmt.Errorf("[dev] failed to create clientset: %v", err)
+
+	}
+
+	tokenReview := &authenticationv1.TokenReview{
+		Spec: authenticationv1.TokenReviewSpec{
+			Token: token,
+		},
+	}
+
+	result, err := clientset.AuthenticationV1().TokenReviews().Create(context.TODO(),
+		tokenReview, metav1.CreateOptions{})
+	if err != nil {
+		log.Errorf("[dev] failed to create token review: %v", err)
+		return fmt.Errorf("[dev] failed to create token review: %v", err)
+	}
+
+	// extract service account, pod name, authenticated status, and pod uid
+	activated := result.Status.Authenticated
+	username := result.Status.User.Username
+	podName := result.Status.User.Extra["authentication.kubernetes.io/pod-name"]
+	podUid := result.Status.User.Extra["authentication.kubernetes.io/pod-uid"]
+
+	log.Infof("[dev] token review result: activated: %t, username: %s, pod name: %s, pod uid: %s",
+		activated, username, podName, podUid)
+
+	return nil
+}
+
+// pod name is readily accessed via node.Metadata.InstanceName
 func GetPodUid() (string, error) {
 	tokenString, err := GetPlatformCredential()
 	if err != nil {

@@ -484,11 +484,15 @@ func (a *Agent) getRbeUserId() (*kcUtil.RbeId, error) {
 	expTime := time.Now().Add(12 * time.Hour).Unix()
 
 	ip := a.envoyOpts.NodeIPs[0] // what does multiple IPs mean for a pod?
+	// another way to get ip address:
+	// podIP, _ := netip.ParseAddr(options.InstanceIPVar.Get())
+	// but is this cluster ip or workload ip?
 
 	node, err := a.generateNodeMetadata()
 	if err != nil {
 		log.Errorf("failed to generate bootstrap metadata: %v", err)
 	}
+	// ingress gateway doesn't have the pod ports set
 	podPort := node.Metadata.PodPorts[0]
 	port := podPort.ContainerPort // is there a default port?
 
@@ -551,6 +555,7 @@ func (a *Agent) initSdsServer() error {
 		a.secretCache.RegisterSecretHandler(a.sdsServer.OnSecretUpdate)
 	}
 
+	if a.cfg.ProxyType == model.SidecarProxy {
 	go func() {
 		// TODO: enable this to renew certificates before they expire
 		// TODO: how would you handle unregistering ids from key curator?
@@ -566,6 +571,7 @@ func (a *Agent) initSdsServer() error {
 		})
 		a.secretCache.UpdateUserOpenings()
 	}()
+	}
 
 	return nil
 }

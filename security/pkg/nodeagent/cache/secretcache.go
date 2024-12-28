@@ -407,6 +407,9 @@ func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(rbeId *kcUtil.RbeId) (
 		return nil, err
 	}
 
+	// TODO: call k8s TokenReview API to verify the token
+	// kcUtil.VerifyServiceAccountToken(adminToken)
+
 	extensions := []pkix.Extension{
 		{
 			Id:    AdminTokenOID,

@@ -137,6 +137,7 @@ func (s *sdsservice) generate(resourceNames []string) (*discovery.DiscoveryRespo
 	resources := xds.Resources{}
 	for _, resourceName := range resourceNames {
 		if resourceName == security.WorkloadRbeIdentityCertResourceName {
+			// TODO: is there a better way to get the RBE secret?
 			rbeSecret := s.st.(*cache.SecretManagerClient).GetRbeCachedSecret(resourceName)
 			if rbeSecret == nil {
 				return nil, fmt.Errorf("[dev] failed to get RBE secret for %v", resourceName)
@@ -277,7 +278,7 @@ func (c *Context) Process(req *discovery.DiscoveryRequest) error {
 		resources = delta.Subscribed.UnsortedList()
 	}
 	// try converting rbesecret into envoy secret
-	resources = append(resources, security.WorkloadRbeIdentityCertResourceName)
+	// resources = append(resources, security.WorkloadRbeIdentityCertResourceName)
 	res, err := c.s.generate(resources)
 	sdsServiceLog.Infof("[dev] response for resources (%+v) %+v", resources, res)
 	if err != nil {
@@ -323,6 +324,7 @@ func toEnvoyRbeSecret(s *security.RbeSecretItem) *tls.Secret {
 	secret := &tls.Secret{
 		Name: s.ResourceName,
 	}
+	// TODO: this is only TLS certificate; I need to send arbitrary data/secret to envoy
 	secret.Type = &tls.Secret_TlsCertificate{
 		TlsCertificate: &tls.TlsCertificate{
 			CertificateChain: &core.DataSource{

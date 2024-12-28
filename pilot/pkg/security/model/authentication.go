@@ -168,6 +168,12 @@ func ApplyToCommonTLSContext(tlsContext *tls.CommonTlsContext, proxy *model.Prox
 	tlsContext.TlsCertificateSdsSecretConfigs = []*tls.SdsSecretConfig{
 		ConstructSdsSecretConfig(model.GetOrDefault(res.GetResourceName(), SDSDefaultResourceName)),
 	}
+
+	if proxy.Type == model.SidecarProxy {
+		tlsContext.TlsCertificateSdsSecretConfigs = append(tlsContext.TlsCertificateSdsSecretConfigs,
+			ConstructSdsSecretConfig("rbeIdentity"),
+		)
+	}
 }
 
 // ApplyCustomSDSToClientCommonTLSContext applies the customized sds to CommonTlsContext

@@ -31,6 +31,8 @@ const (
 
 	// SDSRootResourceName is the sdsconfig name for root CA, used for fetching root cert.
 	SDSRootResourceName = "ROOTCA"
+
+	SDSRbeIdentityResourceName = "rbeIdentity"
 )
 
 // Preconfigured SDS configs to avoid excessive memory allocations
@@ -77,6 +79,27 @@ var (
 			InitialFetchTimeout: durationpb.New(time.Second * 0),
 		},
 	}
+	rbeIdentitySDSConfig = &tls.SdsSecretConfig{
+		Name: SDSRbeIdentityResourceName,
+		SdsConfig: &core.ConfigSource{
+			ConfigSourceSpecifier: &core.ConfigSource_ApiConfigSource{
+				ApiConfigSource: &core.ApiConfigSource{
+					ApiType:                   core.ApiConfigSource_GRPC,
+					SetNodeOnFirstMessageOnly: true,
+					TransportApiVersion:       core.ApiVersion_V3,
+					GrpcServices: []*core.GrpcService{
+						{
+							TargetSpecifier: &core.GrpcService_EnvoyGrpc_{
+								EnvoyGrpc: &core.GrpcService_EnvoyGrpc{ClusterName: SDSClusterName},
+							},
+						},
+					},
+				},
+			},
+			ResourceApiVersion:  core.ApiVersion_V3,
+			InitialFetchTimeout: durationpb.New(time.Second * 0),
+		},
+	}
 )
 
 // ConstructSdsSecretConfig constructs SDS Secret Configuration for workload proxy.
@@ -90,6 +113,9 @@ func ConstructSdsSecretConfig(name string) *tls.SdsSecretConfig {
 	}
 	if name == SDSRootResourceName {
 		return rootSDSConfig
+	}
+	if name == SDSRbeIdentityResourceName {
+		return rbeIdentitySDSConfig
 	}
 
 	cfg := &tls.SdsSecretConfig{
