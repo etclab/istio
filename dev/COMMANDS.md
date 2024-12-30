@@ -57,6 +57,7 @@
 	- (This needs to be done only once after `istio` is installed in the cluster) Next we need to update the `configmap` and set the `imagePullPolicy` to `Always` (hit next until you reach the last occurrence of `imagePullPolicy` and looks something like the image below). This ensures new image from dockerhub is used when a deployment is restarted: `kubectl edit configmap istio-sidecar-injector -n istio-system`
 	![ImagePullPolicy configmap](./imgs/image-pull-policy-configmap.png)
 	- `proxyv2` image is deployed alongside the application in each pod. If we restart the deployment of a service the new image from dockerhub will be used.  Let's say you want to update the `proxyv2` within `ratings`, you can restart the deployment for ratings using: `kubectl rollout restart deployment ratings-v1`
+	![Rollout](./imgs/proxy-rollout.png)
 	- Now to get the logs for `proxyv2` running alongside the service: `ratings`: `kubectl logs $(kubectl get pods --selector=app=ratings -o jsonpath='{.items[0].metadata.name}') -c istio-proxy > ratingsv1-proxy.log`
 	- All of the above commands are in files: `dev/proxy-logs.sh` and `dev/istio-agent-build.sh`
 
