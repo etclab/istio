@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	KeyCurator_FetchUpdate_FullMethodName       = "/keycurator.KeyCurator/FetchUpdate"
+	KeyCurator_FetchAllUpdates_FullMethodName   = "/keycurator.KeyCurator/FetchAllUpdates"
 	KeyCurator_FetchPublicParams_FullMethodName = "/keycurator.KeyCurator/FetchPublicParams"
 	KeyCurator_RegisterUser_FullMethodName      = "/keycurator.KeyCurator/RegisterUser"
 )
@@ -30,6 +31,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type KeyCuratorClient interface {
 	FetchUpdate(ctx context.Context, in *UpdateRequest, opts ...grpc.CallOption) (*UserOpeningResponse, error)
+	FetchAllUpdates(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*AllUpdatesResponse, error)
 	FetchPublicParams(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*PublicParamsResponse, error)
 	RegisterUser(ctx context.Context, in *RegisterRequest, opts ...grpc.CallOption) (*UserOpeningResponse, error)
 }
@@ -46,6 +48,16 @@ func (c *keyCuratorClient) FetchUpdate(ctx context.Context, in *UpdateRequest, o
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(UserOpeningResponse)
 	err := c.cc.Invoke(ctx, KeyCurator_FetchUpdate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *keyCuratorClient) FetchAllUpdates(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*AllUpdatesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AllUpdatesResponse)
+	err := c.cc.Invoke(ctx, KeyCurator_FetchAllUpdates_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -77,6 +89,7 @@ func (c *keyCuratorClient) RegisterUser(ctx context.Context, in *RegisterRequest
 // for forward compatibility.
 type KeyCuratorServer interface {
 	FetchUpdate(context.Context, *UpdateRequest) (*UserOpeningResponse, error)
+	FetchAllUpdates(context.Context, *emptypb.Empty) (*AllUpdatesResponse, error)
 	FetchPublicParams(context.Context, *emptypb.Empty) (*PublicParamsResponse, error)
 	RegisterUser(context.Context, *RegisterRequest) (*UserOpeningResponse, error)
 	mustEmbedUnimplementedKeyCuratorServer()
@@ -91,6 +104,9 @@ type UnimplementedKeyCuratorServer struct{}
 
 func (UnimplementedKeyCuratorServer) FetchUpdate(context.Context, *UpdateRequest) (*UserOpeningResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method FetchUpdate not implemented")
+}
+func (UnimplementedKeyCuratorServer) FetchAllUpdates(context.Context, *emptypb.Empty) (*AllUpdatesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method FetchAllUpdates not implemented")
 }
 func (UnimplementedKeyCuratorServer) FetchPublicParams(context.Context, *emptypb.Empty) (*PublicParamsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method FetchPublicParams not implemented")
@@ -133,6 +149,24 @@ func _KeyCurator_FetchUpdate_Handler(srv interface{}, ctx context.Context, dec f
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(KeyCuratorServer).FetchUpdate(ctx, req.(*UpdateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _KeyCurator_FetchAllUpdates_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KeyCuratorServer).FetchAllUpdates(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KeyCurator_FetchAllUpdates_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KeyCuratorServer).FetchAllUpdates(ctx, req.(*emptypb.Empty))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -183,6 +217,10 @@ var KeyCurator_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "FetchUpdate",
 			Handler:    _KeyCurator_FetchUpdate_Handler,
+		},
+		{
+			MethodName: "FetchAllUpdates",
+			Handler:    _KeyCurator_FetchAllUpdates_Handler,
 		},
 		{
 			MethodName: "FetchPublicParams",

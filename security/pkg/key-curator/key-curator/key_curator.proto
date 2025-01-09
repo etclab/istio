@@ -9,6 +9,7 @@ package keycurator;
 
 service KeyCurator {
     rpc FetchUpdate(UpdateRequest) returns (UserOpeningResponse) {}
+    rpc FetchAllUpdates(google.protobuf.Empty) returns (AllUpdatesResponse) {}
     rpc FetchPublicParams(google.protobuf.Empty) returns (PublicParamsResponse) {}
     rpc RegisterUser(RegisterRequest) returns (UserOpeningResponse) {}
 }
@@ -32,4 +33,13 @@ message UserOpeningResponse {
 
 message UpdateRequest {
     int32 id = 1;
+}
+
+message Opening {
+    repeated rbe.proto.G1 opening = 1;
+}
+
+message AllUpdatesResponse {
+    repeated rbe.proto.G1 allCommitments = 1;
+    repeated Opening allOpenings = 2;
 }

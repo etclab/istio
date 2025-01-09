@@ -8,13 +8,17 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"time"
 
+	"github.com/etclab/rbe"
 	"github.com/golang-jwt/jwt/v5"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
+	bls "github.com/cloudflare/circl/ecc/bls12381"
 	cniconsts "istio.io/istio/cni/pkg/constants"
 	"istio.io/istio/pkg/log"
+	"istio.io/istio/pkg/security"
 	"istio.io/istio/pkg/spiffe"
 	"istio.io/istio/security/pkg/credentialfetcher/plugin"
 	authenticationv1 "k8s.io/api/authentication/v1"
@@ -31,8 +35,7 @@ type RbeId struct {
 }
 
 func (id *RbeId) String() string {
-	return fmt.Sprintf("%s|%s|%d|%s|%d", id.SpiffeId,
-		id.Ip, id.Port, id.Nonce, id.ExpireTime)
+	return fmt.Sprintf("%s|%d|%s", id.Ip, id.Port, id.SpiffeId)
 }
 
 func (id *RbeId) ToNumber() int32 {
@@ -159,27 +162,120 @@ func GetPodUid() (string, error) {
 	return "", fmt.Errorf("could not get pod uid")
 }
 
-// this fails: workload is forbidden to list all ports
-func GetPodMetadata() {
+type PodDetail struct {
+	IP                 string
+	Port               int
+	Name               string
+	UID                string
+	ServiceAccountName string
+	Namespace          string
+	SpiffId            *spiffe.Identity
+}
+
+func (pd *PodDetail) String() string {
+	return fmt.Sprintf("%s|%d|%s", pd.IP, pd.Port, pd.SpiffId)
+}
+
+// requires the Role and RoleBinding on service account to list/get pods
+// see files: dev/default-pod-role.yaml and dev/default-pod-role-binding.yaml
+func GetPodsInDefaultNamespace() ([]PodDetail, error) {
 	config, err := rest.InClusterConfig()
 	if err != nil {
 		log.Errorf("[dev] failed to get in-cluster config: %v", err)
-		return
+		return nil, err
 	}
 
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		log.Errorf("[dev] failed to create clientset: %v", err)
-		return
+		return nil, err
 	}
 
 	pods, err := clientset.CoreV1().Pods("default").List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		log.Errorf("[dev] failed to list pods: %v", err)
-		return
+		return nil, err
 	}
 
+	podDetails := make([]PodDetail, 0)
+
 	for _, pod := range pods.Items {
-		log.Infof("[dev] Pod Name: %s, UID: %s", pod.Name, pod.UID)
+		// TODO: handle if any of these fields are nil
+		podDetail := new(PodDetail)
+		podDetail.IP = pod.Status.PodIP
+		podDetail.Port = int(pod.Spec.Containers[0].Ports[0].ContainerPort)
+		podDetail.Name = pod.Name
+		podDetail.UID = string(pod.UID)
+		podDetail.ServiceAccountName = pod.Spec.ServiceAccountName
+		podDetail.Namespace = pod.Namespace
+
+		podDetail.SpiffId = &spiffe.Identity{
+			TrustDomain:    "cluster.local", // default trust domain
+			Namespace:      podDetail.Namespace,
+			ServiceAccount: podDetail.ServiceAccountName}
+
+		podDetails = append(podDetails, *podDetail)
 	}
+
+	return podDetails, nil
+}
+
+func HashToGt(msg []byte) *bls.Gt {
+	g1 := new(bls.G1)
+	g1.Hash(msg, nil)
+	g2 := new(bls.G2)
+	g2.Hash(msg, nil)
+	return bls.Pair(g1, g2)
+}
+
+func CheckPodValidity(pd *PodDetail, secret *security.RbeSecretItem) (result bool) {
+	thisUser := secret.User
+	pp := secret.Pp
+
+	// TODO: defer-recover is used to return a default value on panic
+	defer func() {
+		if err := recover(); err != nil { //catch
+			log.Infof("[dev] error validating pod with detail: %+v", pd)
+			log.Infof("[dev] error during validation was %+v", err)
+		}
+	}()
+
+	nonce := []byte(fmt.Sprintf("%d", time.Now().Unix()))
+	nonceHash := HashToGt(nonce)
+
+	otherRbeId := &RbeId{
+		Ip:       pd.IP,
+		Port:     pd.Port,
+		SpiffeId: pd.SpiffId,
+	}
+
+	idOtherUser := int(otherRbeId.ToNumber())
+
+	if idOtherUser == thisUser.Id() {
+		return true
+	}
+
+	log.Infof("[dev] id other user: %d", idOtherUser)
+	log.Infof("[dev] id of this user: %d", thisUser.Id())
+
+	cipherText := thisUser.Encrypt(idOtherUser, nonceHash)
+
+	sk := new(bls.Scalar)
+	sk.SetUint64(uint64(idOtherUser))
+	otherUser := rbe.NewUserWithSecret(pp, idOtherUser, sk)
+
+	commitments := secret.Commitments
+	userOpening := secret.Openings[idOtherUser]
+	otherUser.Update(commitments, userOpening)
+
+	log.Infof("[dev] other user initailized here is : %+v", otherUser)
+
+	decryptedNonce, err := otherUser.Decrypt(cipherText)
+	if err != nil {
+		log.Errorf("[dev] failed to decrypt nonce: %v", err)
+		return false
+	}
+
+	result = nonceHash.IsEqual(decryptedNonce)
+	return
 }

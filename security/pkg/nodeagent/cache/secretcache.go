@@ -32,6 +32,7 @@ import (
 	"github.com/etclab/rbe"
 	"github.com/fsnotify/fsnotify"
 
+	bls "github.com/cloudflare/circl/ecc/bls12381"
 	"istio.io/istio/pkg/backoff"
 	"istio.io/istio/pkg/file"
 	"istio.io/istio/pkg/log"
@@ -322,6 +323,9 @@ func (sc *SecretManagerClient) GetRbeCachedSecret(resourceName string) (secret *
 			Certificate: c.Certificate,
 			PrivateKey:  c.PrivateKey,
 			User:        c.User,
+			Pp:          c.Pp,
+			Openings:    c.Openings,
+			Commitments: c.Commitments,
 
 			ResourceName: resourceName,
 			CreatedTime:  c.CreatedTime,
@@ -341,20 +345,32 @@ func (sc *SecretManagerClient) UpdateUserOpenings() {
 	if rbeSecret != nil {
 		id := int32(rbeSecret.User.Id())
 
-		commitments, opening, err := sc.kcClient.FetchUpdate(id)
+		// TODO: fetch public params with updates
+		pp, err := sc.kcClient.FetchPublicParams()
 	if err != nil {
-			log.Errorf("[dev] err on FetchUpdate(): %v", err)
+			log.Errorf("[dev] err on FetchPublicParams: %v", err)
 		}
-		log.Infof("[dev] got the commitments (%d) and opening (%d) for user: %d", len(commitments), len(opening), id)
 
-		rbeSecret.User.Update(commitments, opening)
+		commitments, openings, err := sc.kcClient.FetchAllUpdates()
+		if err != nil {
+			log.Errorf("[dev] err on FetchAllUpdates(): %v", err)
+		}
+		userOpening := openings[id]
+
+		log.Infof("[dev] got the commitments (%d) and opening (%d) for user: %d", len(commitments), len(userOpening), id)
+
+		rbeSecret.User.Update(commitments, userOpening)
+		rbeSecret.Pp = pp
+		rbeSecret.Openings = openings
+		rbeSecret.Commitments = commitments
+
 		sc.rbeCache.SetWorkload(rbeSecret)
 	} else {
 		log.Infof("[dev] no cached rbe secret\n")
 	}
 
 	// fetch updates once new nodes register with key curator (or k8s)
-	delaySeconds := 60
+	delaySeconds := 10
 	delay := time.Duration(delaySeconds) * time.Second
 	log.Infof("[dev] inside UpdateUserOpenings() -- will call again in %d seconds", delaySeconds)
 
@@ -380,18 +396,46 @@ var (
 // registers the workload's identity with the key curator
 // save the key pair, pp to the secret cache
 // TODO: doesn't handle key rotation and persistence for now
-func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(rbeId *kcUtil.RbeId) (secret *security.RbeSecretItem, err error) {
+func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(rbeId *kcUtil.RbeId,
+	isCertRenewal bool) (secret *security.RbeSecretItem, err error) {
 	cacheLog.Infof("[dev] generating workload rbe secrets")
 
-	pp, err := sc.kcClient.FetchPublicParams()
-	if err != nil {
-		log.Errorf("[dev] err on FetchPublicParams: %v", err)
+	cachedSecret := sc.rbeCache.GetWorkload()
+
+	log.Infof("[dev] cached secret: %+v\n", cachedSecret)
+
+	var cachedId int
+	user := new(rbe.User)
+	pp := new(rbe.PublicParams)
+
+	if cachedSecret != nil {
+		user = cachedSecret.User
+		cachedId = user.Id()
+		pp = cachedSecret.Pp
 	}
 
 	id := rbeId.ToNumber()
 	expireTime := rbeId.ExpireTime
+
+	log.Infof("[dev] cert renewal %v", isCertRenewal)
+	log.Infof("[dev] cached is %d and new is %d", cachedId, id)
+	if cachedId == int(id) && isCertRenewal {
+		// no need to re-register the id if it's a cert renewal
+		log.Infof("[dev] cert renewal for id %d", id)
+	} else {
+		log.Infof("[dev] registering user with id %d for the first time", id)
+
+		// register the user with id
+		pp, err = sc.kcClient.FetchPublicParams()
+		if err != nil {
+			log.Errorf("[dev] err on FetchPublicParams: %v", err)
+		}
+
+		sk := new(bls.Scalar)
+		sk.SetUint64(uint64(id))
+
 	// create user
-	user := rbe.NewUser(pp, int(id))
+		user = rbe.NewUserWithSecret(pp, int(id), sk)
 
 	commitments, opening, err := sc.kcClient.RegisterUser(user, id)
 	if err != nil {
@@ -400,6 +444,7 @@ func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(rbeId *kcUtil.RbeId) (
 	}
 
 	user.Update(commitments, opening)
+	}
 
 	adminToken, err := kcUtil.GetPlatformCredential()
 	if err != nil {
@@ -460,6 +505,7 @@ func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(rbeId *kcUtil.RbeId) (
 		Certificate: pemCert,
 		PrivateKey:  pemKey, // private key for certificate
 		User:        user,   // user includes the rbe public-private key pair
+		Pp:          pp,
 
 		ResourceName: security.WorkloadRbeIdentityCertResourceName,
 		CreatedTime:  time.Now(),
@@ -927,7 +973,7 @@ func (sc *SecretManagerClient) registerRbeSecret(item security.RbeSecretItem) {
 			if cached.CreatedTime == item.CreatedTime {
 				resourceLog(item.ResourceName).Debugf("rotating certificate")
 				// Clear the cache so the next call generates a fresh certificate
-				sc.rbeCache.SetWorkload(nil)
+				// sc.rbeCache.SetWorkload(nil)
 				sc.OnRbeSecretUpdate(item.ResourceName)
 			}
 		}

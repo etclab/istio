@@ -283,6 +283,7 @@ type KeyCuratorClient interface {
 	FetchPublicParams() (*rbe.PublicParams, error)
 	RegisterUser(*rbe.User, int32) ([]*bls.G1, []*bls.G1, error)
 	FetchUpdate(int32) ([]*bls.G1, []*bls.G1, error)
+	FetchAllUpdates() ([]*bls.G1, [][]*bls.G1, error)
 }
 
 type RBESecretManager interface {
@@ -320,6 +321,9 @@ type RbeSecretItem struct {
 	Certificate []byte
 	PrivateKey  []byte
 	User        *rbe.User
+	Pp          *rbe.PublicParams
+	Openings    [][]*bls.G1
+	Commitments []*bls.G1
 
 	ResourceName string // rbeIdentity
 	CreatedTime  time.Time

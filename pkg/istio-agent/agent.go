@@ -134,7 +134,8 @@ type Agent struct {
 	secOpts   *security.Options
 	envoyOpts envoy.ProxyConfig
 
-	podPorts model.PodPortList // not needed
+	podsValidity     map[string]bool
+	podsValidityLock sync.RWMutex
 
 	envoyAgent *envoy.Agent
 
@@ -505,9 +506,9 @@ func (a *Agent) getRbeUserId() (*kcUtil.RbeId, error) {
 	rbeId := &kcUtil.RbeId{
 		Ip:         ip,
 		Port:       port,
+		SpiffeId:   spiffeId,
 		Nonce:      nonce,
 		ExpireTime: expTime,
-		SpiffeId:   spiffeId,
 		PodUid:     uid,
 	}
 
@@ -562,9 +563,10 @@ func (a *Agent) initSdsServer() error {
 		// TODO: think about storing all these information in a filename
 		// TODO: so that it can be readily accessed/picked up
 		a.secretCache.RegisterRbeSecretHandler(func(resourceName string) {
-			_, _ = a.getWorkloadRbeCerts(a.secretCache)
+				_, _ = a.getWorkloadRbeCerts(a.secretCache, true)
 		})
-		_, _ = a.getWorkloadRbeCerts(a.secretCache)
+			// register id for the first time
+			_, _ = a.getWorkloadRbeCerts(a.secretCache, false)
 
 		a.secretCache.RegisterRbeUpdateHandler(func(resourceName string) {
 			a.secretCache.UpdateUserOpenings()
@@ -573,6 +575,42 @@ func (a *Agent) initSdsServer() error {
 	}()
 	}
 
+	ticker := time.NewTicker(10 * time.Second)
+	quit := make(chan struct{}) // close this when agent quits
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				allPodDetails, err := kcUtil.GetPodsInDefaultNamespace()
+				if err != nil {
+					log.Errorf("[dev] failed to get pods in default namespace: %v", err)
+				}
+				log.Infof("[dev] all pod details: %+v", allPodDetails)
+
+				secret := a.secretCache.GetRbeCachedSecret(security.WorkloadRbeIdentityCertResourceName)
+				if secret == nil {
+					log.Infof("[dev] rbe secret for user not yet found - will try again")
+				} else {
+					podsValidity := map[string]bool{}
+
+					for _, podDetail := range allPodDetails {
+						podsValidity[podDetail.String()] = kcUtil.CheckPodValidity(&podDetail, secret)
+					}
+
+					log.Infof("[dev] printing pod validity map for all pods")
+					log.Infof("%+v", podsValidity)
+
+					a.podsValidityLock.Lock()
+					a.podsValidity = podsValidity
+					a.podsValidityLock.Unlock()
+				}
+			case <-quit:
+				ticker.Stop()
+				return
+			}
+		}
+	}()
+
 	return nil
 }
 
@@ -580,7 +618,8 @@ func (a *Agent) initSdsServer() error {
 // how will the secretItem be different for rbe
 // - because in case of rbe there's two identities: the actual workload identity and serial rbe identity
 // - also the user commitments, openings, user object and public params need to be stored as/in a SecretItem
-func (a *Agent) getWorkloadRbeCerts(st *cache.SecretManagerClient) (*security.SecretItem, error) {
+func (a *Agent) getWorkloadRbeCerts(st *cache.SecretManagerClient,
+	isCertRenewal bool) (*security.SecretItem, error) {
 	rbeId, err := a.getRbeUserId()
 	if err != nil {
 		log.Errorf("[dev] failed to get rbe user id: %v", err)
@@ -589,7 +628,7 @@ func (a *Agent) getWorkloadRbeCerts(st *cache.SecretManagerClient) (*security.Se
 	b := backoff.NewExponentialBackOff(backoff.DefaultOption())
 	// This will loop forever until success
 	err = b.RetryWithContext(context.TODO(), func() error {
-		_, err := st.GenerateWorkloadRbeSecrets(rbeId)
+		_, err := st.GenerateWorkloadRbeSecrets(rbeId, isCertRenewal)
 		if err == nil {
 			return nil
 		}

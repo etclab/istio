@@ -111,6 +111,36 @@ func NewKCClient(opts *security.Options, tlsOpts *TLSOptions) (security.KeyCurat
 	return c, nil
 }
 
+func (c *KCClient) FetchAllUpdates() ([]*bls.G1, [][]*bls.G1, error) {
+	ctx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs("ClusterID", c.opts.ClusterID))
+	updResp, err := c.client.FetchAllUpdates(ctx, &emptypb.Empty{})
+	if err != nil {
+		log.Errorf("[dev] err on FetchAllUpdates(): %v", err)
+		return nil, nil, err
+	}
+
+	openings := make([][]*bls.G1, 0)
+	commitments := make([]*bls.G1, 0)
+
+	for _, v := range updResp.GetAllCommitments() {
+		g1 := new(bls.G1)
+		g1.SetBytes(v.GetPoint())
+		commitments = append(commitments, g1)
+	}
+
+	for _, v := range updResp.GetAllOpenings() {
+		userOpening := make([]*bls.G1, 0)
+		for _, u := range v.GetOpening() {
+			g1 := new(bls.G1)
+			g1.SetBytes(u.GetPoint())
+			userOpening = append(userOpening, g1)
+		}
+		openings = append(openings, userOpening)
+	}
+
+	return commitments, openings, nil
+}
+
 func (c *KCClient) FetchUpdate(id int32) ([]*bls.G1, []*bls.G1, error) {
 	updReq := &pb.UpdateRequest{
 		Id: id,

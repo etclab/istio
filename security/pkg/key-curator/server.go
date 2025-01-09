@@ -36,6 +36,26 @@ func (kcs *KeyCuratorServer) FetchPublicParams(_ context.Context, in *emptypb.Em
 	return &pb.PublicParamsResponse{Pp: kcs.pp.ToProto()}, nil
 }
 
+// fetches updates for all users
+func (kcs *KeyCuratorServer) FetchAllUpdates(_ context.Context, in *emptypb.Empty) (*pb.AllUpdatesResponse, error) {
+	allOpenings := []*pb.Opening{}
+	allCommitments := []*proto.G1{}
+
+	for _, v := range kcs.kc.UserOpenings {
+		openings := []*proto.G1{}
+		for _, u := range v {
+			openings = append(openings, &proto.G1{Point: u.Bytes()})
+		}
+		allOpenings = append(allOpenings, &pb.Opening{Opening: openings})
+	}
+
+	for _, v := range kcs.kc.PP.Commitments {
+		allCommitments = append(allCommitments, &proto.G1{Point: v.Bytes()})
+	}
+
+	return &pb.AllUpdatesResponse{AllOpenings: allOpenings, AllCommitments: allCommitments}, nil
+}
+
 func (kcs *KeyCuratorServer) FetchUpdate(_ context.Context, in *pb.UpdateRequest) (*pb.UserOpeningResponse, error) {
 	id := int(in.GetId())
 
