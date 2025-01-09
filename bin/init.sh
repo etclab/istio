@@ -21,44 +21,6 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
-if [[ "${USE_CUSTOM_ENVOY:-}" == "true" ]]; then
-  echo "[Custom Envoy Binary] Start of customization"
-
-  # Clone or pull custom envoy git directory
-
-  ENVOY_URL="https://github.com/envoyproxy/envoy.git"
-  ENVOY_DIRECTORY="./custom-envoy"
-  
-  if [ -d "$ENVOY_DIRECTORY" ]; then
-    echo "[Custom Envoy Binary] Envoy repository exists - Pulling changes!"
-    git -C "$ENVOY_DIRECTORY" pull
-  else
-    echo "[Custom Envoy Binary] Envoy repository does not exist - Cloning!"
-    git clone $ENVOY_URL $ENVOY_DIRECTORY
-  fi
-
-  # Customize Envoy build export path
-  # See: https://www.envoyproxy.io/docs/envoy/latest/start/building/local_docker_build
-  echo "[Custom Envoy Binary] Setting custom ENVOY_DOCKER_BUILD_DIR!"
-  export ENVOY_DOCKER_BUILD_DIR="${TARGET_OUT}/custom-envoy"
-
-  # docker login
-
-  # Run Envoy build scripts
-  # See: https://www.envoyproxy.io/docs/envoy/latest/start/building/local_docker_build
-  echo "[Custom Envoy Binary] Running Envoy build scripts!"
-  $ENVOY_DIRECTORY/ci/run_envoy_docker.sh "$ENVOY_DIRECTORY/ci/do_ci.sh release.server_only.binary"
-  # ENVOY_DOCKER_IN_DOCKER=1 $ENVOY_DIRECTORY/ci/run_envoy_docker.sh "$ENVOY_DIRECTORY/ci/do_ci.sh docker"
-
-  # TODO: Copy extracted envoy binary to ${TARGET_OUT}/envoy"
-
-  # TODO: Make it executable
-
-  # Exit as rest of script is for downloading standard version of Envoy
-  echo "[Custom Envoy Binary] End of customization"
-  exit 0
-fi
-
 if [[ "${TARGET_OUT_LINUX:-}" == "" ]]; then
   echo "Environment variables not set. Make sure you run through the makefile (\`make init\`) rather than directly."
   exit 1
@@ -69,6 +31,18 @@ if [[ "${TARGET_ARCH}" == "amd64" ]]; then
 	ISTIO_ENVOY_ARCH_SUFFIX=""
 else
 	ISTIO_ENVOY_ARCH_SUFFIX="-${TARGET_ARCH}"
+fi
+
+# If a local version of enovy has been defined, always use that.
+# This ignores the rest of the script and exits with code 0.
+if [[ "${USE_LOCAL_ENVOY}" == "1" ]]; then
+  echo "Local Envoy binary found. Copying into correct locations."
+
+  cp -f "${ENVOY_ISTIO_TMP_DIR}/envoy" "${TARGET_OUT_LINUX}/envoy"
+  echo "ABC"
+  cp -f "${ENVOY_ISTIO_TMP_DIR}/envoy" "${TARGET_OUT_LINUX}/release/envoy"
+
+  exit 0
 fi
 
 # Populate the git version for istio/proxy (i.e. Envoy)
