@@ -38,9 +38,11 @@ fi
 if [[ "${USE_LOCAL_ENVOY}" == "1" ]]; then
   echo "Local Envoy binary found. Copying into correct locations."
 
-  cp -f "${ENVOY_ISTIO_TMP_DIR}/envoy" "${TARGET_OUT_LINUX}/envoy"
-  echo "ABC"
-  cp -f "${ENVOY_ISTIO_TMP_DIR}/envoy" "${TARGET_OUT_LINUX}/release/envoy"
+  mkdir -p "${TARGET_OUT_LINUX}"
+  mkdir -p "${TARGET_OUT_LINUX}/release"
+
+  cp -f "./out/tmp/envoy" "${TARGET_OUT_LINUX}/envoy"
+  cp -f "./out/tmp/envoy" "${TARGET_OUT_LINUX}/release/envoy"
 
   exit 0
 fi
