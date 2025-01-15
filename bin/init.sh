@@ -33,6 +33,20 @@ else
 	ISTIO_ENVOY_ARCH_SUFFIX="-${TARGET_ARCH}"
 fi
 
+# If a local version of enovy has been defined for use with Mazu, we want to use that.
+# This ignores the rest of the script and exits with code 0.
+if [[ "${MAZU_USE_LOCAL_ENVOY}" == "1" ]]; then
+  echo "Local Envoy binary found. Copying into correct locations."
+
+  mkdir -p "${TARGET_OUT_LINUX}"
+  mkdir -p "${TARGET_OUT_LINUX}/release"
+
+  cp -f "./out/tmp/envoy" "${TARGET_OUT_LINUX}/envoy"
+  cp -f "./out/tmp/envoy" "${TARGET_OUT_LINUX}/release/envoy"
+
+  exit 0
+fi
+
 # Populate the git version for istio/proxy (i.e. Envoy)
 PROXY_REPO_SHA="${PROXY_REPO_SHA:-$(grep PROXY_REPO_SHA istio.deps  -A 4 | grep lastStableSHA | cut -f 4 -d '"')}"
 
