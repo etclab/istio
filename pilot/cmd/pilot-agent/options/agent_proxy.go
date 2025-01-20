@@ -56,4 +56,5 @@ func NewProxyArgs() ProxyArgs {
 func (node *ProxyArgs) applyDefaults() {
 	node.PodName = PodNameVar.Get()
 	node.PodNamespace = PodNamespaceVar.Get()
+	node.ProxyLogLevel = "debug"
 }

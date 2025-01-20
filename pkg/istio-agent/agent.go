@@ -494,8 +494,11 @@ func (a *Agent) getRbeUserId() (*kcUtil.RbeId, error) {
 		log.Errorf("failed to generate bootstrap metadata: %v", err)
 	}
 	// ingress gateway doesn't have the pod ports set
+	port := 443 // default port
+	if len(node.Metadata.PodPorts) > 0 {
 	podPort := node.Metadata.PodPorts[0]
-	port := podPort.ContainerPort // is there a default port?
+		port = podPort.ContainerPort
+	}
 
 	spiffeId := &spiffe.Identity{
 		TrustDomain:    a.secOpts.TrustDomain,

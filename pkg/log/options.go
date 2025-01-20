@@ -109,7 +109,7 @@ func DefaultOptions() *Options {
 	return &Options{
 		OutputPaths:          []string{defaultOutputPath},
 		ErrorOutputPaths:     []string{defaultErrorOutputPath},
-		defaultOutputLevels:  "default:info,grpc:none",
+		defaultOutputLevels:  "default:debug,grpc:none,ca:debug",
 		stackTraceLevels:     DefaultScopeName + ":" + levelToString[defaultStackTraceLevel],
 		logGRPC:              false,
 		useStackdriverFormat: false,
