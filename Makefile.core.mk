@@ -159,6 +159,7 @@ init: $(TARGET_OUT)/istio_is_init init-ztunnel-rs
 # I tried to make this dependent on what I thought was the appropriate
 # lock file, but it caused the rule for that file to get run (which
 # seems to be about obtaining a new version of the 3rd party libraries).
+.PHONY: $(TARGET_OUT)/istio_is_init
 $(TARGET_OUT)/istio_is_init: bin/init.sh istio.deps | $(TARGET_OUT)
 	@# Add a retry, as occasionally we see transient connection failures to GCS
 	@# Like `curl: (56) OpenSSL SSL_read: SSL_ERROR_SYSCALL, errno 104`

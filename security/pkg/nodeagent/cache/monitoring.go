@@ -50,6 +50,16 @@ var (
 		"Number of times secret generation failed for files",
 	)
 
+	keyUpdateTime = monitoring.NewSum(
+		"key_update_time",
+		"The amount of time required to fetch all key updates, in milliseconds.",
+	)
+
+	keyUpdateSize = monitoring.NewSum(
+		"key_update_size",
+		"The size of the returned data from fetching all key updates, in bytes.",
+	)
+
 	certExpirySeconds = monitoring.NewDerivedGauge(
 		"cert_expiry_seconds",
 		"The time remaining, in seconds, before the certificate chain will expire. "+

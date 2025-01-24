@@ -347,11 +347,32 @@ func (sc *SecretManagerClient) UpdateUserOpenings() {
 
 		// TODO: fetch public params with updates
 		pp, err := sc.kcClient.FetchPublicParams()
-	if err != nil {
+		if err != nil {
 			log.Errorf("[dev] err on FetchPublicParams: %v", err)
 		}
 
+		timeBeforeFAU := time.Now()
+
 		commitments, openings, err := sc.kcClient.FetchAllUpdates()
+
+		totalTimeFAU := float64(time.Since(timeBeforeFAU).Nanoseconds()) / float64(time.Millisecond)
+
+		keyUpdateTime.With(RequestType.Value(monitoring.MAZU)).Record(totalTimeFAU)
+
+		totalSizeFAU := 0
+
+		for _, g := range commitments {
+			totalSizeFAU += len(g.Bytes())
+		}
+
+		for _, row := range openings {
+			for _, g := range row {
+				totalSizeFAU += len(g.Bytes())
+			}
+		}
+
+		keyUpdateSize.With(RequestType.Value(monitoring.MAZU)).Record(float64(totalSizeFAU))
+
 		if err != nil {
 			log.Errorf("[dev] err on FetchAllUpdates(): %v", err)
 		}
@@ -377,7 +398,7 @@ func (sc *SecretManagerClient) UpdateUserOpenings() {
 	sc.queue.PushDelayed(func() error {
 		if cached := sc.rbeCache.GetWorkload(); cached != nil {
 			sc.OnRbeOpeningsUpdate(cached.ResourceName)
-}
+		}
 		return nil
 	}, delay)
 }
@@ -434,16 +455,16 @@ func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(rbeId *kcUtil.RbeId,
 		sk := new(bls.Scalar)
 		sk.SetUint64(uint64(id))
 
-	// create user
+		// create user
 		user = rbe.NewUserWithSecret(pp, int(id), sk)
 
-	commitments, opening, err := sc.kcClient.RegisterUser(user, id)
-	if err != nil {
-		log.Errorf("[dev] err on RegisterUser(): %v", err)
-		return nil, err
-	}
+		commitments, opening, err := sc.kcClient.RegisterUser(user, id)
+		if err != nil {
+			log.Errorf("[dev] err on RegisterUser(): %v", err)
+			return nil, err
+		}
 
-	user.Update(commitments, opening)
+		user.Update(commitments, opening)
 	}
 
 	adminToken, err := kcUtil.GetPlatformCredential()

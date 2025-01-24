@@ -22,6 +22,7 @@ var RequestType = monitoring.CreateLabel("request_type")
 const (
 	TokenExchange = "token_exchange"
 	CSR           = "csr"
+	MAZU          = "mazu"
 )
 
 var NumOutgoingRetries = monitoring.NewSum(
