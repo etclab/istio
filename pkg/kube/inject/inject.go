@@ -350,8 +350,7 @@ func InboundTrafficPolicyMode(meshConfig *meshconfig.MeshConfig) string {
 // gcr.io/gke-release/asm/proxyv2:1.11.2-asm.17-distroless
 // docker.io/istio/proxyv2:1.12
 func imageURL(hub, imageName, tag, imageType string) string {
-	// return hub + "/" + imageName + ":" + updateImageTypeIfPresent(tag, imageType)
-	return "docker.io/shadowbearvr/proxyv2:shadowbearvr" // [UPDATE FOR YOUR USERNAME]
+	return hub + "/" + imageName + ":" + updateImageTypeIfPresent(tag, imageType)
 }
 
 // KnownImageTypes are image types that istio pubishes.
