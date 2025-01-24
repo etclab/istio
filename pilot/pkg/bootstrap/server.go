@@ -77,6 +77,7 @@ import (
 	"istio.io/istio/pkg/security"
 	"istio.io/istio/pkg/spiffe"
 	"istio.io/istio/pkg/util/sets"
+	keycurator "istio.io/istio/security/pkg/key-curator"
 	"istio.io/istio/security/pkg/pki/ca"
 	"istio.io/istio/security/pkg/pki/ra"
 	caserver "istio.io/istio/security/pkg/server/ca"
@@ -145,11 +146,12 @@ type Server struct {
 	cacertsWatcher *fsnotify.Watcher
 	dnsNames       []string
 
-	CA       *ca.IstioCA
-	RA       ra.RegistrationAuthority
-	caServer *caserver.Server
+	CA               *ca.IstioCA
+	RA               ra.RegistrationAuthority
+	caServer         *caserver.Server
+	keyCuratorServer *keycurator.KeyCuratorServer
 
-	// TrustAnchors for workload to workload mTLS
+	// TrustAnchors for workload to workload mTLS // okay where is mTLS enforced
 	workloadTrustBundle *tb.TrustBundle
 	certMu              sync.RWMutex
 	istiodCert          *tls.Certificate
@@ -388,6 +390,9 @@ func NewServer(args *PilotArgs, initFuncs ...func(*Server)) (*Server, error) {
 	// Start CA or RA server. This should be called after CA and Istiod certs have been created.
 	s.startCA(caOpts)
 
+	// todo: fix authenticators with caOpts
+	s.startKeyCurator()
+
 	// TODO: don't run this if galley is started, one ctlz is enough
 	if args.CtrlZOptions != nil {
 		_, _ = ctrlz.Run(args.CtrlZOptions, nil)
@@ -570,6 +575,7 @@ func (s *Server) initKubeClient(args *PilotArgs) error {
 		if err != nil {
 			return fmt.Errorf("failed creating kube client: %v", err)
 		}
+		// we're watching something finally
 		s.kubeClient = kubelib.EnableCrdWatcher(s.kubeClient)
 	}
 
@@ -1236,6 +1242,23 @@ func (s *Server) shouldStartNsController() bool {
 	}
 
 	return true
+}
+
+func (s *Server) startKeyCurator() {
+	// init key curator server
+	if s.keyCuratorServer == nil {
+	s.keyCuratorServer = keycurator.NewKeyCuratorServer(constants.MaxUsers)
+	}
+
+	s.addStartFunc("key-curator", func(stop <-chan struct{}) error {
+		grpcServer := s.secureGrpcServer
+		if s.secureGrpcServer == nil {
+			grpcServer = s.grpcServer
+		}
+		log.Infof("starting Key Curator server")
+		s.RunKeyCurator(grpcServer)
+		return nil
+	})
 }
 
 // StartCA starts the CA or RA server if configured.

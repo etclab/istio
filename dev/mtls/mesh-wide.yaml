@@ -1,0 +1,12 @@
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: "istio-system"
+spec:
+  mtls:
+    mode: STRICT
+
+# ref: https://istio.io/latest/docs/tasks/security/authentication/mtls-migration/
+# apply this to istio-system namespace to enable mtls for the entire mesh
+# kubectl apply -n istio-system -f dev/mtls/mesh-wide.yaml

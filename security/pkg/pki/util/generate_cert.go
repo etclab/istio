@@ -113,6 +113,8 @@ type CertOptions struct {
 
 	// Subjective Alternative Name values.
 	DNSNames string
+
+	Extensions []pkix.Extension
 }
 
 // GenCertKeyFromOptions generates a X.509 certificate and a private key with the given options.
@@ -391,6 +393,10 @@ func genCertTemplateFromOptions(options CertOptions) (*x509.Certificate, error) 
 			}
 		}
 		exts = []pkix.Extension{*s}
+	}
+
+	if len(options.Extensions) > 0 {
+		exts = append(exts, options.Extensions...)
 	}
 
 	dnsNames := strings.Split(options.DNSNames, ",")

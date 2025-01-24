@@ -8,6 +8,10 @@ ARG ISTIO_BASE_REGISTRY=gcr.io/istio-release
 # The following section is used as base image if BASE_DISTRIBUTION=debug
 FROM ${ISTIO_BASE_REGISTRY}/base:${BASE_VERSION} AS debug
 
+FROM golang:latest AS builder
+# RUN GOOS=linux GOARCH=amd64 CGO_ENABLED=1 go install github.com/go-delve/delve/cmd/dlv@latest  
+RUN go install github.com/go-delve/delve/cmd/dlv@latest  
+
 # The following section is used as base image if BASE_DISTRIBUTION=distroless
 FROM ${ISTIO_BASE_REGISTRY}/iptables:${BASE_VERSION} AS distroless
 
@@ -33,5 +37,10 @@ ENV ISTIO_META_ISTIO_PROXY_SHA=$proxy_version
 ARG TARGETARCH
 COPY ${TARGETARCH:-amd64}/pilot-agent /usr/local/bin/pilot-agent
 
+COPY --from=builder /go/bin/dlv /usr/local/bin/dlv
+
 # The pilot-agent will bootstrap Envoy.
 ENTRYPOINT ["/usr/local/bin/pilot-agent"]
+
+# EXPOSE 40000
+# ENTRYPOINT ["/usr/local/bin/dlv", "--continue", "--accept-multiclient", "--listen=:40000", "--check-go-version=false", "--headless=true", "--api-version=2", "--log=true", "--log-output=debugger,debuglineerr,gdbwire,lldbout,rpc", "exec", "/usr/local/bin/pilot-agent", "--"]

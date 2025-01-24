@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+option go_package = "istio.io/istio/security/pkg/key-curator/key-curator";
+
+import "rbe.proto";
+import "google/protobuf/empty.proto";
+
+package keycurator;
+
+service KeyCurator {
+    rpc FetchUpdate(UpdateRequest) returns (UserOpeningResponse) {}
+    rpc FetchAllUpdates(google.protobuf.Empty) returns (AllUpdatesResponse) {}
+    rpc FetchPublicParams(google.protobuf.Empty) returns (PublicParamsResponse) {}
+    rpc RegisterUser(RegisterRequest) returns (UserOpeningResponse) {}
+}
+
+message Empty {}
+
+message PublicParamsResponse {
+    rbe.proto.PublicParams pp = 1;
+}
+
+message RegisterRequest {
+    int32 id = 1;
+    rbe.proto.G1 publicKey = 2;
+    repeated rbe.proto.G1 xi = 3;
+}
+
+message UserOpeningResponse {
+    repeated rbe.proto.G1 commitments = 1; 
+    repeated rbe.proto.G1 opening = 2; 
+}
+
+message UpdateRequest {
+    int32 id = 1;
+}
+
+message Opening {
+    repeated rbe.proto.G1 opening = 1;
+}
+
+message AllUpdatesResponse {
+    repeated rbe.proto.G1 allCommitments = 1;
+    repeated Opening allOpenings = 2;
+}

@@ -43,12 +43,14 @@ import (
 	"istio.io/istio/pkg/model"
 	"istio.io/istio/pkg/security"
 	"istio.io/istio/pkg/xds"
+	"istio.io/istio/security/pkg/nodeagent/cache"
 )
 
 var sdsServiceLog = log.RegisterScope("sds", "SDS service debugging")
 
 type sdsservice struct {
-	st security.SecretManager
+	st    security.SecretManager
+	rbeSt security.RBESecretManager // unused
 
 	stop       chan struct{}
 	rootCaPath string
@@ -123,9 +125,30 @@ func newSDSService(st security.SecretManager, options *security.Options, pkpConf
 
 var version uberatomic.Uint64
 
+// okay what is this generating?
+// - converts the secret item to an envoy secret
+// who is this generating for?
+// - envoy
+// who calls this method?
+// - there's a Process() method that calls this in reponse to a discovery request
+// what triggers this method?
+// - a discovery request probably from envoy?
 func (s *sdsservice) generate(resourceNames []string) (*discovery.DiscoveryResponse, error) {
 	resources := xds.Resources{}
 	for _, resourceName := range resourceNames {
+		if resourceName == security.WorkloadRbeIdentityCertResourceName {
+			// TODO: is there a better way to get the RBE secret?
+			rbeSecret := s.st.(*cache.SecretManagerClient).GetRbeCachedSecret(resourceName)
+			if rbeSecret == nil {
+				return nil, fmt.Errorf("[dev] failed to get RBE secret for %v", resourceName)
+			}
+
+			res := protoconv.MessageToAny(toEnvoyRbeSecret(rbeSecret))
+			resources = append(resources, &discovery.Resource{
+				Name:     resourceName,
+				Resource: res,
+			})
+		} else {
 		secret, err := s.st.GenerateSecret(resourceName)
 		if err != nil {
 			// Typically, in Istiod, we do not return an error for a failure to generate a resource
@@ -142,6 +165,8 @@ func (s *sdsservice) generate(resourceNames []string) (*discovery.DiscoveryRespo
 			Name:     resourceName,
 			Resource: res,
 		})
+		}
+
 	}
 	return &discovery.DiscoveryResponse{
 		TypeUrl:     model.SecretType,
@@ -245,11 +270,17 @@ func (c *Context) Process(req *discovery.DiscoveryRequest) error {
 	if !shouldRespond {
 		return nil
 	}
+	// TODO: how does envoy know which resourcenames to request?
+	// TODO: where exactly in envoy are these resource names specified?
+	// TODO: how are these secrets used by envoy?
 	resources := req.ResourceNames
 	if !delta.IsEmpty() {
 		resources = delta.Subscribed.UnsortedList()
 	}
+	// try converting rbesecret into envoy secret
+	// resources = append(resources, security.WorkloadRbeIdentityCertResourceName)
 	res, err := c.s.generate(resources)
+	sdsServiceLog.Infof("[dev] response for resources (%+v) %+v", resources, res)
 	if err != nil {
 		return err
 	}
@@ -287,6 +318,28 @@ func (s *sdsservice) FetchSecrets(ctx context.Context, discReq *discovery.Discov
 
 func (s *sdsservice) Close() {
 	close(s.stop)
+}
+
+func toEnvoyRbeSecret(s *security.RbeSecretItem) *tls.Secret {
+	secret := &tls.Secret{
+		Name: s.ResourceName,
+	}
+	// TODO: this is only TLS certificate; I need to send arbitrary data/secret to envoy
+	secret.Type = &tls.Secret_TlsCertificate{
+		TlsCertificate: &tls.TlsCertificate{
+			CertificateChain: &core.DataSource{
+				Specifier: &core.DataSource_InlineBytes{
+					InlineBytes: s.Certificate,
+				},
+			},
+			PrivateKey: &core.DataSource{
+				Specifier: &core.DataSource_InlineBytes{
+					InlineBytes: s.PrivateKey,
+				},
+			},
+		},
+	}
+	return secret
 }
 
 // toEnvoySecret converts a security.SecretItem to an Envoy tls.Secret

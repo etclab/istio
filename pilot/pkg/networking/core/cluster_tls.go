@@ -162,11 +162,14 @@ func (cb *ClusterBuilder) buildUpstreamClusterTLSContext(opts *buildClusterOpts,
 
 		tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs = append(tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs,
 			sec_model.ConstructSdsSecretConfig(sec_model.SDSDefaultResourceName))
+		// tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs = append(tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs,
+		// 	sec_model.ConstructSdsSecretConfig("rbeIdentity"))
 
 		tlsContext.CommonTlsContext.ValidationContextType = &tlsv3.CommonTlsContext_CombinedValidationContext{
 			CombinedValidationContext: &tlsv3.CommonTlsContext_CombinedCertificateValidationContext{
 				DefaultValidationContext:         &tlsv3.CertificateValidationContext{MatchSubjectAltNames: util.StringToExactMatch(tls.SubjectAltNames)},
 				ValidationContextSdsSecretConfig: sec_model.ConstructSdsSecretConfig(sec_model.SDSRootResourceName),
+				// ValidationContextSdsSecretConfig: sec_model.ConstructSdsSecretConfig("rbeIdentity"),
 			},
 		}
 		// Set default SNI of cluster name for istio_mutual if sni is not set.
@@ -242,6 +245,8 @@ func constructUpstreamTLS(opts *buildClusterOpts, tls *networking.ClientTLSSetti
 			res.PrivateKeyPath = tls.PrivateKey
 			tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs = append(tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs,
 				sec_model.ConstructSdsSecretConfig(res.GetResourceName()))
+			// tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs = append(tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs,
+			// 	sec_model.ConstructSdsSecretConfig("rbeIdentity"))
 		}
 		// If tls.CaCertificate or CaCertificate in Metadata isn't configured, or tls.InsecureSkipVerify is true,
 		// don't set up SdsSecretConfig

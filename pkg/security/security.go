@@ -23,6 +23,8 @@ import (
 	"strings"
 	"time"
 
+	bls "github.com/cloudflare/circl/ecc/bls12381"
+	"github.com/etclab/rbe"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 
@@ -98,6 +100,9 @@ const (
 	// identity.
 	WorkloadKeyCertResourceName = "default"
 
+	// resource name to identity the workload identity certificate
+	WorkloadRbeIdentityCertResourceName = "rbeIdentity"
+
 	// GCE is Credential fetcher type of Google plugin
 	GCE = "GoogleComputeEngine"
 
@@ -157,6 +162,11 @@ type Options struct {
 
 	// CAEndpointSAN overrides the ServerName extracted from CAEndpoint.
 	CAEndpointSAN string
+
+	// KCEndpoint is the key curator endpoint
+	// istio-agent registers to key curator (and get updates from) using this
+	KCEndpoint    string
+	KCEndpointSAN string
 
 	// The CA provider name.
 	CAProviderName string
@@ -268,6 +278,18 @@ type Client interface {
 	GetRootCertBundle() ([]string, error)
 }
 
+type KeyCuratorClient interface {
+	Close()
+	FetchPublicParams() (*rbe.PublicParams, error)
+	RegisterUser(*rbe.User, int32) ([]*bls.G1, []*bls.G1, error)
+	FetchUpdate(int32) ([]*bls.G1, []*bls.G1, error)
+	FetchAllUpdates() ([]*bls.G1, [][]*bls.G1, error)
+}
+
+type RBESecretManager interface {
+	GenerateWorkloadPublicParams()
+}
+
 // SecretManager defines secrets management interface which is used by SDS.
 type SecretManager interface {
 	// GenerateSecret generates new secret for the given resource.
@@ -293,6 +315,19 @@ type SecretItem struct {
 	CreatedTime time.Time
 
 	ExpireTime time.Time
+}
+
+type RbeSecretItem struct {
+	Certificate []byte
+	PrivateKey  []byte
+	User        *rbe.User
+	Pp          *rbe.PublicParams
+	Openings    [][]*bls.G1
+	Commitments []*bls.G1
+
+	ResourceName string // rbeIdentity
+	CreatedTime  time.Time
+	ExpireTime   time.Time
 }
 
 type CredFetcher interface {

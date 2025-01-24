@@ -19,6 +19,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509/pkix"
+	"encoding/asn1"
 	"fmt"
 	"math/rand/v2"
 	"os"
@@ -27,15 +29,19 @@ import (
 	"sync"
 	"time"
 
+	"github.com/etclab/rbe"
 	"github.com/fsnotify/fsnotify"
 
+	bls "github.com/cloudflare/circl/ecc/bls12381"
 	"istio.io/istio/pkg/backoff"
 	"istio.io/istio/pkg/file"
+	"istio.io/istio/pkg/log"
 	istiolog "istio.io/istio/pkg/log"
 	"istio.io/istio/pkg/queue"
 	"istio.io/istio/pkg/security"
 	"istio.io/istio/pkg/spiffe"
 	"istio.io/istio/pkg/util/sets"
+	kcUtil "istio.io/istio/security/pkg/key-curator/util"
 	"istio.io/istio/security/pkg/monitoring"
 	nodeagentutil "istio.io/istio/security/pkg/nodeagent/util"
 	pkiutil "istio.io/istio/security/pkg/pki/util"
@@ -53,17 +59,26 @@ const (
 	firstRetryBackOffDuration = 50 * time.Millisecond
 )
 
+// --> what is this security.Client?
+// spiffe vs regular certificate??
 // SecretManagerClient a SecretManager that signs CSRs using a provided security.Client. The primary
 // usage is to fetch the two specially named resources: `default`, which refers to the workload's
 // spiffe certificate, and ROOTCA, which contains just the root certificate for the workload
-// certificates. These are separated only due to the fact that Envoy has them separated.
+// certificates.
+// okay upto here
+
+// These are separated only due to the fact that Envoy has them separated.
 // Additionally, arbitrary certificates may be fetched from local files to support DestinationRule
 // and Gateway. Note that certificates stored externally will be sent from Istiod directly; the
 // in-agent SecretManagerClient has low privileges and cannot read Kubernetes Secrets or other
-// storage backends. Istiod is in charge of determining whether the agent (ie SecretManagerClient) or
+// storage backends.
+// okay it is limited to talking with Istiod?
+
+// Istiod is in charge of determining whether the agent (ie SecretManagerClient) or
 // Istiod will serve an SDS response, by selecting the appropriate cluster in the SDS configuration
 // it serves.
 //
+
 // SecretManagerClient supports two modes of retrieving certificate (potentially at the same time):
 //   - File based certificates. If certs are mounted under well-known path /etc/certs/{key,cert,root-cert.pem},
 //     requests for `default` and `ROOTCA` will automatically read from these files. Additionally,
@@ -71,7 +86,8 @@ const (
 //     names in accordance with security.SdsCertificateConfig (file-cert: and file-root:).
 //   - On demand CSRs. This is used only for the `default` certificate. When this resource is
 //     requested, a CSR will be sent to the configured caClient.
-//
+// okay the on demand CSRs are used for workload certificates
+
 // Callers are expected to only call GenerateSecret when a new certificate is required. Generally,
 // this should be done a single time at startup, then repeatedly when the certificate is near
 // expiration. To help users handle certificate expiration, any certificates created by the caClient
@@ -82,6 +98,8 @@ const (
 type SecretManagerClient struct {
 	caClient security.Client
 
+	kcClient security.KeyCuratorClient
+
 	// configOptions includes all configurable params for the cache.
 	configOptions *security.Options
 
@@ -90,7 +108,11 @@ type SecretManagerClient struct {
 
 	// Cache of workload certificate and root certificate. File based certs are never cached, as
 	// lookup is cheap.
-	cache secretCache
+	cache            secretCache
+	rbeCache         rbeSecretCache
+	rbeSecretHandler func(resourceName string)
+	rbeUpdateHandler func(resourceName string)
+	rbeCertMutex     sync.RWMutex
 
 	// generateMutex ensures we do not send concurrent requests to generate a certificate
 	generateMutex sync.Mutex
@@ -124,6 +146,44 @@ type secretCache struct {
 	mu       sync.RWMutex
 	workload *security.SecretItem
 	certRoot []byte
+}
+
+type rbeSecretCache struct {
+	mu       sync.RWMutex
+	workload *security.RbeSecretItem
+
+	pmu              sync.RWMutex
+	podValidationMap map[string]bool
+}
+
+func (s *rbeSecretCache) GetPodValidationmap() map[string]bool {
+	s.pmu.RLock()
+	defer s.pmu.RUnlock()
+	if s.podValidationMap == nil {
+		return nil
+	}
+	return s.podValidationMap
+}
+
+func (s *rbeSecretCache) SetPodValidationmap(value map[string]bool) {
+	s.pmu.Lock()
+	defer s.pmu.Unlock()
+	s.podValidationMap = value
+}
+
+func (s *rbeSecretCache) GetWorkload() *security.RbeSecretItem {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.workload == nil {
+		return nil
+	}
+	return s.workload
+}
+
+func (s *rbeSecretCache) SetWorkload(value *security.RbeSecretItem) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.workload = value
 }
 
 // GetRoot returns cached root cert and cert expiration time. This method is thread safe.
@@ -190,10 +250,18 @@ func NewSecretManagerClient(caClient security.Client, options *security.Options)
 	return ret, nil
 }
 
+// TODO: find alt way to do this
+func (sc *SecretManagerClient) SetKCClient(skc security.KeyCuratorClient) {
+	sc.kcClient = skc
+}
+
 func (sc *SecretManagerClient) Close() {
 	_ = sc.certWatcher.Close()
 	if sc.caClient != nil {
 		sc.caClient.Close()
+	}
+	if sc.kcClient != nil {
+		sc.kcClient.Close()
 	}
 	close(sc.stop)
 }
@@ -202,6 +270,39 @@ func (sc *SecretManagerClient) RegisterSecretHandler(h func(resourceName string)
 	sc.certMutex.Lock()
 	defer sc.certMutex.Unlock()
 	sc.secretHandler = h
+}
+
+// registers a function to fetch updates from the key curator
+func (sc *SecretManagerClient) RegisterRbeUpdateHandler(h func(resourceName string)) {
+	sc.rbeCertMutex.Lock()
+	defer sc.rbeCertMutex.Unlock()
+
+	sc.rbeUpdateHandler = h
+}
+
+func (sc *SecretManagerClient) RegisterRbeSecretHandler(h func(resourceName string)) {
+	sc.rbeCertMutex.Lock()
+	defer sc.rbeCertMutex.Unlock()
+
+	sc.rbeSecretHandler = h
+}
+
+func (sc *SecretManagerClient) OnRbeOpeningsUpdate(resourceName string) {
+	sc.rbeCertMutex.RLock()
+	defer sc.rbeCertMutex.RUnlock()
+
+	if sc.rbeUpdateHandler != nil {
+		sc.rbeUpdateHandler(resourceName)
+	}
+}
+
+func (sc *SecretManagerClient) OnRbeSecretUpdate(resourceName string) {
+	sc.rbeCertMutex.RLock()
+	defer sc.rbeCertMutex.RUnlock()
+
+	if sc.rbeSecretHandler != nil {
+		sc.rbeSecretHandler(resourceName)
+	}
 }
 
 func (sc *SecretManagerClient) OnSecretUpdate(resourceName string) {
@@ -219,7 +320,8 @@ func (sc *SecretManagerClient) getCachedSecret(resourceName string) (secret *sec
 
 	if c := sc.cache.GetWorkload(); c != nil {
 		if resourceName == security.RootCertReqResourceName {
-			rootCertBundle = sc.mergeTrustAnchorBytes(c.RootCert)
+			rootCertBundle = sc.mergeTrustAnchorBytes(c.RootCert) // why merge trust anchor bytes? only for ROOTCA -- okay
+			// let's see what this looks like
 			ns = &security.SecretItem{
 				ResourceName: resourceName,
 				RootCert:     rootCertBundle,
@@ -240,6 +342,252 @@ func (sc *SecretManagerClient) getCachedSecret(resourceName string) (secret *sec
 		return ns
 	}
 	return nil
+}
+
+func (sc *SecretManagerClient) GetRbeCachedSecret(resourceName string) (secret *security.RbeSecretItem) {
+	if resourceName == security.RbePodValidationMap {
+		if c := sc.rbeCache.GetPodValidationmap(); c != nil {
+			ns := &security.RbeSecretItem{
+				ResourceName:     resourceName,
+				PodValidationMap: c,
+				CreatedTime:      time.Now(),
+			}
+			return ns
+		}
+		return nil
+	}
+
+	var ns *security.RbeSecretItem
+
+	if c := sc.rbeCache.GetWorkload(); c != nil {
+		ns = &security.RbeSecretItem{
+			Certificate: c.Certificate,
+			PrivateKey:  c.PrivateKey,
+			User:        c.User,
+			Pp:          c.Pp,
+			Openings:    c.Openings,
+			Commitments: c.Commitments,
+
+			ResourceName: resourceName,
+			CreatedTime:  c.CreatedTime,
+			ExpireTime:   c.ExpireTime,
+		}
+
+		cacheLog.WithLabels("ttl", time.Until(c.ExpireTime)).Info("returned workload rbe secret/certificate from cache")
+
+		return ns
+	}
+	return nil
+}
+
+func (sc *SecretManagerClient) RegisterPodValidityMap(pValidity map[string]bool) {
+	log.Infof("[dev] registering pod validity map with value: %v", pValidity)
+	sc.rbeCache.SetPodValidationmap(pValidity)
+}
+
+func (sc *SecretManagerClient) UpdateUserOpenings() {
+	rbeSecret := sc.GetRbeCachedSecret(security.WorkloadRbeIdentityCertResourceName)
+
+	if rbeSecret != nil {
+		id := int32(rbeSecret.User.Id())
+
+		// TODO: fetch public params with updates
+		pp, err := sc.kcClient.FetchPublicParams()
+		if err != nil {
+			log.Errorf("[dev] err on FetchPublicParams: %v", err)
+		}
+
+		timeBeforeFAU := time.Now()
+
+		// for single user
+		commitments, userOpening, err := sc.kcClient.FetchUpdate(id)
+		rbeSecret.User.Update(commitments, userOpening)
+
+		totalTimeFAU := float64(time.Since(timeBeforeFAU).Nanoseconds()) / float64(time.Millisecond)
+
+		keyUpdateTime.With(RequestType.Value(monitoring.MAZU)).Record(totalTimeFAU)
+		log.Infof("[dev] Key Update Time: %f", totalTimeFAU)
+
+		totalSizeFAU := 0
+
+		for _, g := range commitments {
+			totalSizeFAU += len(g.Bytes())
+		}
+
+		for _, row := range userOpening {
+			totalSizeFAU += len(row.Bytes())
+		}
+
+		keyUpdateSize.With(RequestType.Value(monitoring.MAZU)).Record(float64(totalSizeFAU))
+		log.Infof("[dev] Key Update Size: %d", totalSizeFAU)
+
+		// for all users
+		commitments, openings, err := sc.kcClient.FetchAllUpdates()
+		if err != nil {
+			log.Errorf("[dev] err on FetchAllUpdates(): %v", err)
+		}
+		userOpening = openings[id]
+
+		log.Infof("[dev] got the commitments (%d) and opening (%d) for user: %d", len(commitments), len(userOpening), id)
+
+		// rbeSecret.User.Update(commitments, userOpening)
+		rbeSecret.Pp = pp
+		rbeSecret.Openings = openings
+		rbeSecret.Commitments = commitments
+
+		sc.rbeCache.SetWorkload(rbeSecret)
+	} else {
+		log.Infof("[dev] no cached rbe secret\n")
+	}
+
+	// fetch updates once new nodes register with key curator (or k8s)
+	delaySeconds := 10
+	delay := time.Duration(delaySeconds) * time.Second
+	log.Infof("[dev] inside UpdateUserOpenings() -- will call again in %d seconds", delaySeconds)
+
+	sc.queue.PushDelayed(func() error {
+		if cached := sc.rbeCache.GetWorkload(); cached != nil {
+			sc.OnRbeOpeningsUpdate(cached.ResourceName)
+		}
+		return nil
+	}, delay)
+}
+
+// 1.3.6.1.4.1.9901
+var (
+	AdminTokenOID = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 9901, 33}
+	SpiffeIdOID   = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 9901, 34}
+	SerialOID     = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 9901, 35}
+	SignatureOID  = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 9901, 36}
+	PodUidOID     = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 9901, 37}
+)
+
+// this function does a few things -- based on RBE
+// generates a key pair for a workload
+// registers the workload's identity with the key curator
+// save the key pair, pp to the secret cache
+// TODO: what happens if a pod restarts due to error and have the same identity?
+func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(rbeId *kcUtil.RbeId,
+	isCertRenewal bool) (secret *security.RbeSecretItem, err error) {
+	cacheLog.Infof("[dev] generating workload rbe secrets")
+
+	cachedSecret := sc.rbeCache.GetWorkload()
+
+	log.Infof("[dev] cached secret: %+v\n", cachedSecret)
+
+	var cachedId int
+	user := new(rbe.User)
+	pp := new(rbe.PublicParams)
+
+	if cachedSecret != nil {
+		user = cachedSecret.User
+		cachedId = user.Id()
+		pp = cachedSecret.Pp
+	}
+
+	id := rbeId.ToNumber()
+	expireTime := rbeId.ExpireTime
+
+	log.Infof("[dev] cert renewal %v", isCertRenewal)
+	log.Infof("[dev] cached is %d and new is %d", cachedId, id)
+	if cachedId == int(id) && isCertRenewal {
+		// no need to re-register the id if it's a cert renewal
+		log.Infof("[dev] cert renewal for id %d", id)
+	} else {
+		log.Infof("[dev] registering user with id %d for the first time", id)
+
+		// register the user with id
+		pp, err = sc.kcClient.FetchPublicParams()
+		if err != nil {
+			log.Errorf("[dev] err on FetchPublicParams: %v", err)
+		}
+
+		sk := new(bls.Scalar)
+		sk.SetUint64(uint64(id))
+
+		// create user
+		user = rbe.NewUserWithSecret(pp, int(id), sk)
+
+		commitments, opening, err := sc.kcClient.RegisterUser(user, id)
+		if err != nil {
+			log.Errorf("[dev] err on RegisterUser(): %v", err)
+			return nil, err
+		}
+
+		user.Update(commitments, opening)
+	}
+
+	adminToken, err := kcUtil.GetPlatformCredential()
+	if err != nil {
+		log.Errorf("[dev] err on GetPlatformCredential(): %v", err)
+		return nil, err
+	}
+
+	// note: k8s TokenReview API to verify the token
+	// log.Infof("[dev] admin token %v", adminToken)
+	// kcUtil.VerifyServiceAccountToken(adminToken)
+
+	extensions := []pkix.Extension{
+		{
+			Id:    AdminTokenOID,
+			Value: []byte(adminToken),
+		},
+		{
+			Id:    SpiffeIdOID,
+			Value: []byte(rbeId.SpiffeId.String()),
+		},
+		{
+			Id:    SerialOID,
+			Value: []byte(rbeId.Nonce),
+		},
+		{
+			Id:    SignatureOID,
+			Value: []byte("signed"),
+		},
+		{
+			Id:    PodUidOID,
+			Value: []byte(rbeId.PodUid),
+		},
+	}
+
+	options := pkiutil.CertOptions{
+		Host:       rbeId.SpiffeId.String(),
+		RSAKeySize: sc.configOptions.WorkloadRSAKeySize,
+		PKCS8Key:   sc.configOptions.Pkcs8Keys,
+		ECSigAlg:   pkiutil.SupportedECSignatureAlgorithms(sc.configOptions.ECCSigAlg),
+		ECCCurve:   pkiutil.SupportedEllipticCurves(sc.configOptions.ECCCurve),
+
+		IsSelfSigned: true,
+		IsClient:     true,
+		IsServer:     true,
+
+		Extensions: extensions,
+	}
+
+	pemCert, pemKey, err := pkiutil.GenCertKeyFromOptions(options)
+	if err != nil {
+		log.Errorf("[dev] err on GenCertKeyFromOptions(): %v", err)
+		return nil, err
+	}
+
+	log.Infof("[dev] certificate bytes:\n%s", string(pemCert[:]))
+	log.Infof("[dev] key bytes:\n%s", string(pemKey[:]))
+
+	// TODO: can I store these in a file and access them in envoy?
+	rsi := &security.RbeSecretItem{
+		Certificate: pemCert,
+		PrivateKey:  pemKey, // private key for certificate
+		User:        user,   // user includes the rbe public-private key pair
+		Pp:          pp,
+
+		ResourceName: security.WorkloadRbeIdentityCertResourceName,
+		CreatedTime:  time.Now(),
+		ExpireTime:   time.Unix(expireTime, 0),
+	}
+
+	sc.registerRbeSecret(*rsi)
+
+	return rsi, nil
 }
 
 // GenerateSecret passes the cached secret to SDS.StreamSecrets and SDS.FetchSecret.
@@ -393,6 +741,7 @@ func (sc *SecretManagerClient) keyCertificateExist(certPath, keyPath string) boo
 }
 
 // Generate a root certificate item from the passed in rootCertPath
+// doesn't generate but sets the root cert in the cache
 func (sc *SecretManagerClient) generateRootCertFromExistingFile(rootCertPath, resourceName string, workload bool) (*security.SecretItem, error) {
 	var rootCert []byte
 	var err error
@@ -418,6 +767,7 @@ func (sc *SecretManagerClient) generateRootCertFromExistingFile(rootCertPath, re
 
 	// Set the rootCert only if it is workload root cert.
 	if workload {
+		// confused: what cache is the root cert being saved to?
 		sc.cache.SetRoot(rootCert)
 	}
 	return &security.SecretItem{
@@ -427,9 +777,11 @@ func (sc *SecretManagerClient) generateRootCertFromExistingFile(rootCertPath, re
 }
 
 // Generate a key and certificate item from the existing key certificate files from the passed in file paths.
+// reads from the file and adds to the cache
 func (sc *SecretManagerClient) generateKeyCertFromExistingFiles(certChainPath, keyPath, resourceName string) (*security.SecretItem, error) {
 	// There is a remote possibility that key is written and cert is not written yet.
 	// To handle that case, check if cert and key are valid if they are valid then only send to proxy.
+	// woah where did sending to proxy come from? - we were only reading certs/keys
 	o := backoff.DefaultOption()
 	o.InitialInterval = sc.configOptions.FileDebounceDuration
 	b := backoff.NewExponentialBackOff(o)
@@ -492,10 +844,11 @@ func (sc *SecretManagerClient) readFileWithTimeout(path string) ([]byte, error) 
 	}
 }
 
+// are we able to read secrets from file? for the given resourceName
 func (sc *SecretManagerClient) generateFileSecret(resourceName string) (bool, *security.SecretItem, error) {
 	logPrefix := cacheLogPrefix(resourceName)
 
-	cf := sc.existingCertificateFile
+	cf := sc.existingCertificateFile // okay defined somewhere in the config beforehand; has three different paths
 	// outputToCertificatePath handles a special case where we have configured to output certificates
 	// to the special /etc/certs directory. In this case, we need to ensure we do *not* read from
 	// these files, otherwise we would never rotate.
@@ -511,6 +864,7 @@ func (sc *SecretManagerClient) generateFileSecret(resourceName string) (bool, *s
 
 	switch {
 	// Default root certificate.
+	// requesting root certificate
 	case resourceName == security.RootCertReqResourceName && sc.rootCertificateExist(cf.CaCertificatePath) && !outputToCertificatePath:
 		sdsFromFile = true
 		if sitem, err = sc.generateRootCertFromExistingFile(cf.CaCertificatePath, resourceName, true); err == nil {
@@ -525,7 +879,7 @@ func (sc *SecretManagerClient) generateFileSecret(resourceName string) (bool, *s
 			// Adding cert is sufficient here as key can't change without changing the cert.
 			sc.addFileWatcher(cf.CertificatePath, resourceName)
 		}
-	case resourceName == security.FileRootSystemCACert:
+	case resourceName == security.FileRootSystemCACert: // the default root certs in linux
 		sdsFromFile = true
 		if sc.caRootPath != "" {
 			if sitem, err = sc.generateRootCertFromExistingFile(sc.caRootPath, resourceName, false); err == nil {
@@ -535,9 +889,10 @@ func (sc *SecretManagerClient) generateFileSecret(resourceName string) (bool, *s
 			sdsFromFile = false
 		}
 	default:
-		// Check if the resource name refers to a file mounted certificate.
+		// Check if the resource name refers to a file mounted certificate. --> what does a file mounted cert resource name look like?
 		// Currently used in destination rules and server certs (via metadata).
 		// Based on the resource name, we need to read the secret from a file encoded in the resource name.
+		// okay file will be encoded in the resource name
 		cfg, ok := security.SdsCertificateConfigFromResourceName(resourceName)
 		sdsFromFile = ok
 		switch {
@@ -564,6 +919,7 @@ func (sc *SecretManagerClient) generateFileSecret(resourceName string) (bool, *s
 		// We do not register the secret. Unlike on-demand CSRs, there is nothing we can do if a file
 		// cert expires; there is no point sending an update when its near expiry. Instead, a
 		// separate file watcher will ensure if the file changes we trigger an update.
+		// we're interested in on-demand CSRs-- yes
 		return sdsFromFile, sitem, nil
 	}
 	return sdsFromFile, nil, nil
@@ -593,6 +949,8 @@ func (sc *SecretManagerClient) generateNewSecret(resourceName string) (*security
 		ECSigAlg:   pkiutil.SupportedECSignatureAlgorithms(sc.configOptions.ECCSigAlg),
 		ECCCurve:   pkiutil.SupportedEllipticCurves(sc.configOptions.ECCCurve),
 	}
+
+	log.Infof("[dev] options for GenCSR %+v", options)
 
 	// Generate the cert/key, send CSR to CA.
 	csrPEM, keyPEM, err := pkiutil.GenCSR(options)
@@ -649,7 +1007,7 @@ func (sc *SecretManagerClient) generateNewSecret(resourceName string) (*security
 	}, nil
 }
 
-var rotateTime = func(secret security.SecretItem, graceRatio float64, graceRatioJitter float64) time.Duration {
+var rotateTimeUtil = func(createdTime, expireTime time.Time, graceRatio float64, graceRatioJitter float64) time.Duration {
 	// stagger rotation times to prevent large fleets of clients from renewing at the same moment.
 	jitter := (rand.Float64() * graceRatioJitter) * float64(rand.IntN(2)*2-1) // #nosec G404 -- crypto/rand not worth the cost
 	jitterGraceRatio := graceRatio + jitter
@@ -659,15 +1017,55 @@ var rotateTime = func(secret security.SecretItem, graceRatio float64, graceRatio
 	if jitterGraceRatio < 0 {
 		jitterGraceRatio = 0
 	}
-	secretLifeTime := secret.ExpireTime.Sub(secret.CreatedTime)
+	secretLifeTime := expireTime.Sub(createdTime)
 	gracePeriod := time.Duration((jitterGraceRatio) * float64(secretLifeTime))
-	delay := time.Until(secret.ExpireTime.Add(-gracePeriod))
+	delay := time.Until(expireTime.Add(-gracePeriod))
 	if delay < 0 {
 		delay = 0
 	}
 	return delay
 }
 
+var rotateTime = func(secret security.SecretItem, graceRatio float64, graceRatioJitter float64) time.Duration {
+	return rotateTimeUtil(secret.CreatedTime, secret.ExpireTime, graceRatio, graceRatioJitter)
+}
+
+var rotateRbeTime = func(secret security.RbeSecretItem, graceRatio float64, graceRatioJitter float64) time.Duration {
+	return rotateTimeUtil(secret.CreatedTime, secret.ExpireTime, graceRatio, graceRatioJitter)
+}
+
+// how does rotation work? - there's a rotation handler function
+// how do I customize the rotation? -- is it going to call the same method for rotation: GenerateRbe
+func (sc *SecretManagerClient) registerRbeSecret(item security.RbeSecretItem) {
+	delay := rotateRbeTime(item, sc.configOptions.SecretRotationGracePeriodRatio, sc.configOptions.SecretRotationGracePeriodRatioJitter)
+
+	item.ResourceName = security.WorkloadRbeIdentityCertResourceName
+	// In case there are two calls to GenerateSecret at once, we don't want both to be concurrently registered
+	if sc.rbeCache.GetWorkload() != nil {
+		resourceLog(item.ResourceName).Infof("skip scheduling certificate rotation, already scheduled")
+		return
+	}
+	sc.rbeCache.SetWorkload(&item)
+	resourceLog(item.ResourceName).Debugf("scheduled certificate for rotation in %v", delay)
+	certExpirySeconds.ValueFrom(func() float64 { return time.Until(item.ExpireTime).Seconds() }, ResourceName.Value(item.ResourceName))
+	sc.queue.PushDelayed(func() error {
+		// In case `UpdateConfigTrustBundle` called, it will resign workload cert.
+		// Check if this is a stale scheduled rotating task.
+		log.Infof("[dev] inside sc.queue.PushDelayed -- will call this every %d seconds", delay)
+		if cached := sc.rbeCache.GetWorkload(); cached != nil {
+			if cached.CreatedTime == item.CreatedTime {
+				resourceLog(item.ResourceName).Debugf("rotating certificate")
+				// do not clear the cache - we do generate the cert again but
+				// we read the info about id and cert from old cert before replacing it
+				// sc.rbeCache.SetWorkload(nil)
+				sc.OnRbeSecretUpdate(item.ResourceName)
+			}
+		}
+		return nil
+	}, delay)
+}
+
+// mark
 func (sc *SecretManagerClient) registerSecret(item security.SecretItem) {
 	delay := rotateTime(item, sc.configOptions.SecretRotationGracePeriodRatio, sc.configOptions.SecretRotationGracePeriodRatioJitter)
 	item.ResourceName = security.WorkloadKeyCertResourceName
@@ -676,7 +1074,7 @@ func (sc *SecretManagerClient) registerSecret(item security.SecretItem) {
 		resourceLog(item.ResourceName).Infof("skip scheduling certificate rotation, already scheduled")
 		return
 	}
-	sc.cache.SetWorkload(&item)
+	sc.cache.SetWorkload(&item) // workload is the secret item, why?
 	resourceLog(item.ResourceName).Debugf("scheduled certificate for rotation in %v", delay)
 	certExpirySeconds.ValueFrom(func() float64 { return time.Until(item.ExpireTime).Seconds() }, ResourceName.Value(item.ResourceName))
 	sc.queue.PushDelayed(func() error {
@@ -789,11 +1187,13 @@ func (sc *SecretManagerClient) UpdateConfigTrustBundle(trustBundle []byte) error
 	return nil
 }
 
+// what is a trustanchor here?
 // mergeTrustAnchorBytes: Merge cert bytes with the cached TrustAnchors.
 func (sc *SecretManagerClient) mergeTrustAnchorBytes(caCerts []byte) []byte {
 	return sc.mergeConfigTrustBundle(pkiutil.PemCertBytestoString(caCerts))
 }
 
+// hmm trustanchor is just bytes converted to string? why?
 // mergeConfigTrustBundle: merge rootCerts trustAnchors provided in args with proxyConfig trustAnchors
 // ensure dedup and sorting before returning trustAnchors
 func (sc *SecretManagerClient) mergeConfigTrustBundle(rootCerts []string) []byte {
@@ -808,7 +1208,7 @@ func (sc *SecretManagerClient) mergeConfigTrustBundle(rootCerts []string) []byte
 		anchors.Insert(cert)
 	}
 	anchorBytes := []byte{}
-	for _, cert := range sets.SortedList(anchors) {
+	for _, cert := range sets.SortedList(anchors) { // why sort the string (converted from bytes)?
 		anchorBytes = pkiutil.AppendCertByte(anchorBytes, []byte(cert))
 	}
 	return anchorBytes
