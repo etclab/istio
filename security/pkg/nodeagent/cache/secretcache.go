@@ -152,23 +152,23 @@ type rbeSecretCache struct {
 	mu       sync.RWMutex
 	workload *security.RbeSecretItem
 
-	pmu              sync.RWMutex
-	podValidationMap map[string]bool
-}
+// 	pmu              sync.RWMutex
+// 	podValidationMap map[string]bool
+// }
 
-func (s *rbeSecretCache) GetPodValidationmap() map[string]bool {
-	s.pmu.RLock()
-	defer s.pmu.RUnlock()
-	if s.podValidationMap == nil {
-		return nil
-	}
-	return s.podValidationMap
-}
+// func (s *rbeSecretCache) GetPodValidationmap() map[string]bool {
+// 	s.pmu.RLock()
+// 	defer s.pmu.RUnlock()
+// 	if s.podValidationMap == nil {
+// 		return nil
+// 	}
+// 	return s.podValidationMap
+// }
 
-func (s *rbeSecretCache) SetPodValidationmap(value map[string]bool) {
-	s.pmu.Lock()
-	defer s.pmu.Unlock()
-	s.podValidationMap = value
+// func (s *rbeSecretCache) SetPodValidationmap(value map[string]bool) {
+// 	s.pmu.Lock()
+// 	defer s.pmu.Unlock()
+// 	s.podValidationMap = value
 }
 
 func (s *rbeSecretCache) GetWorkload() *security.RbeSecretItem {
@@ -345,17 +345,17 @@ func (sc *SecretManagerClient) getCachedSecret(resourceName string) (secret *sec
 }
 
 func (sc *SecretManagerClient) GetRbeCachedSecret(resourceName string) (secret *security.RbeSecretItem) {
-	if resourceName == security.RbePodValidationMap {
-		if c := sc.rbeCache.GetPodValidationmap(); c != nil {
-			ns := &security.RbeSecretItem{
-				ResourceName:     resourceName,
-				PodValidationMap: c,
-				CreatedTime:      time.Now(),
-			}
-			return ns
-		}
-		return nil
-	}
+	// if resourceName == security.RbePodValidationMap {
+	// 	if c := sc.rbeCache.GetPodValidationmap(); c != nil {
+	// 		ns := &security.RbeSecretItem{
+	// 			ResourceName:     resourceName,
+	// 			PodValidationMap: c,
+	// 			CreatedTime:      time.Now(),
+	// 		}
+	// 		return ns
+	// 	}
+	// 	return nil
+	// }
 
 	var ns *security.RbeSecretItem
 
@@ -380,10 +380,10 @@ func (sc *SecretManagerClient) GetRbeCachedSecret(resourceName string) (secret *
 	return nil
 }
 
-func (sc *SecretManagerClient) RegisterPodValidityMap(pValidity map[string]bool) {
-	log.Infof("[dev] registering pod validity map with value: %v", pValidity)
-	sc.rbeCache.SetPodValidationmap(pValidity)
-}
+// func (sc *SecretManagerClient) RegisterPodValidityMap(pValidity map[string]bool) {
+// 	log.Infof("[dev] registering pod validity map with value: %v", pValidity)
+// 	sc.rbeCache.SetPodValidationmap(pValidity)
+// }
 
 func (sc *SecretManagerClient) UpdateUserOpenings() {
 	rbeSecret := sc.GetRbeCachedSecret(security.WorkloadRbeIdentityCertResourceName)
