@@ -358,6 +358,7 @@ func (sc *SecretManagerClient) UpdateUserOpenings() {
 		totalTimeFAU := float64(time.Since(timeBeforeFAU).Nanoseconds()) / float64(time.Millisecond)
 
 		keyUpdateTime.With(RequestType.Value(monitoring.MAZU)).Record(totalTimeFAU)
+		log.Infof("[dev] Key Update Time: %f", totalTimeFAU)
 
 		totalSizeFAU := 0
 
@@ -372,6 +373,7 @@ func (sc *SecretManagerClient) UpdateUserOpenings() {
 		}
 
 		keyUpdateSize.With(RequestType.Value(monitoring.MAZU)).Record(float64(totalSizeFAU))
+		log.Infof("[dev] Key Update Size: %d", totalSizeFAU)
 
 		if err != nil {
 			log.Errorf("[dev] err on FetchAllUpdates(): %v", err)

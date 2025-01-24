@@ -50,12 +50,12 @@ var (
 		"Number of times secret generation failed for files",
 	)
 
-	keyUpdateTime = monitoring.NewSum(
+	keyUpdateTime = monitoring.NewGauge(
 		"key_update_time",
 		"The amount of time required to fetch all key updates, in milliseconds.",
 	)
 
-	keyUpdateSize = monitoring.NewSum(
+	keyUpdateSize = monitoring.NewGauge(
 		"key_update_size",
 		"The size of the returned data from fetching all key updates, in bytes.",
 	)
