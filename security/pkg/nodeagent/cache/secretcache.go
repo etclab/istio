@@ -152,23 +152,23 @@ type rbeSecretCache struct {
 	mu       sync.RWMutex
 	workload *security.RbeSecretItem
 
-// 	pmu              sync.RWMutex
-// 	podValidationMap map[string]bool
-// }
+	// 	pmu              sync.RWMutex
+	// 	podValidationMap map[string]bool
+	// }
 
-// func (s *rbeSecretCache) GetPodValidationmap() map[string]bool {
-// 	s.pmu.RLock()
-// 	defer s.pmu.RUnlock()
-// 	if s.podValidationMap == nil {
-// 		return nil
-// 	}
-// 	return s.podValidationMap
-// }
+	// func (s *rbeSecretCache) GetPodValidationmap() map[string]bool {
+	// 	s.pmu.RLock()
+	// 	defer s.pmu.RUnlock()
+	// 	if s.podValidationMap == nil {
+	// 		return nil
+	// 	}
+	// 	return s.podValidationMap
+	// }
 
-// func (s *rbeSecretCache) SetPodValidationmap(value map[string]bool) {
-// 	s.pmu.Lock()
-// 	defer s.pmu.Unlock()
-// 	s.podValidationMap = value
+	//	func (s *rbeSecretCache) SetPodValidationmap(value map[string]bool) {
+	//		s.pmu.Lock()
+	//		defer s.pmu.Unlock()
+	//		s.podValidationMap = value
 }
 
 func (s *rbeSecretCache) GetWorkload() *security.RbeSecretItem {
@@ -397,16 +397,16 @@ func (sc *SecretManagerClient) UpdateUserOpenings() {
 			log.Errorf("[dev] err on FetchPublicParams: %v", err)
 		}
 
+		// for single user
 		timeBeforeFAU := time.Now()
 
-		// for single user
 		commitments, userOpening, err := sc.kcClient.FetchUpdate(id)
 		rbeSecret.User.Update(commitments, userOpening)
 
 		totalTimeFAU := float64(time.Since(timeBeforeFAU).Nanoseconds()) / float64(time.Millisecond)
 
-		keyUpdateTime.With(RequestType.Value(monitoring.MAZU)).Record(totalTimeFAU)
-		log.Infof("[dev] Key Update Time: %f", totalTimeFAU)
+		keyUpdateTimeSingle.With(RequestType.Value(monitoring.MAZU)).Record(totalTimeFAU)
+		log.Infof("[dev] Key Update Time (Single): %f", totalTimeFAU)
 
 		totalSizeFAU := 0
 
@@ -418,21 +418,43 @@ func (sc *SecretManagerClient) UpdateUserOpenings() {
 			totalSizeFAU += len(row.Bytes())
 		}
 
-		keyUpdateSize.With(RequestType.Value(monitoring.MAZU)).Record(float64(totalSizeFAU))
-		log.Infof("[dev] Key Update Size: %d", totalSizeFAU)
+		keyUpdateSizeSingle.With(RequestType.Value(monitoring.MAZU)).Record(float64(totalSizeFAU))
+		log.Infof("[dev] Key Update Size (Single): %d", totalSizeFAU)
+
+		log.Infof("[dev] Got the commitments (%d) and opening (%d) for user: %d", len(commitments), len(userOpening), id)
 
 		// for all users
-		commitments, openings, err := sc.kcClient.FetchAllUpdates()
+		timeBeforeFAU = time.Now()
+
+		commitments, allOpenings, err := sc.kcClient.FetchAllUpdates()
 		if err != nil {
 			log.Errorf("[dev] err on FetchAllUpdates(): %v", err)
 		}
-		userOpening = openings[id]
+		userOpening = allOpenings[id]
 
-		log.Infof("[dev] got the commitments (%d) and opening (%d) for user: %d", len(commitments), len(userOpening), id)
+		totalTimeFAU = float64(time.Since(timeBeforeFAU).Nanoseconds()) / float64(time.Millisecond)
+
+		keyUpdateTimeAll.With(RequestType.Value(monitoring.MAZU)).Record(totalTimeFAU)
+		log.Infof("[dev] Key Update Time (All): %f", totalTimeFAU)
+
+		totalSizeFAU = 0
+
+		for _, g := range commitments {
+			totalSizeFAU += len(g.Bytes())
+		}
+
+		for _, row := range allOpenings {
+			for _, g := range row {
+				totalSizeFAU += len(g.Bytes())
+			}
+		}
+
+		keyUpdateSizeAll.With(RequestType.Value(monitoring.MAZU)).Record(float64(totalSizeFAU))
+		log.Infof("[dev] Key Update Size (All): %d", totalSizeFAU)
 
 		// rbeSecret.User.Update(commitments, userOpening)
 		rbeSecret.Pp = pp
-		rbeSecret.Openings = openings
+		rbeSecret.Openings = allOpenings
 		rbeSecret.Commitments = commitments
 
 		sc.rbeCache.SetWorkload(rbeSecret)
