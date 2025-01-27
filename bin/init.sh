@@ -35,7 +35,7 @@ fi
 
 # If a local version of enovy has been defined for use with Mazu, we want to use that.
 # This ignores the rest of the script and exits with code 0.
-if [[ "${MAZU_USE_LOCAL_ENVOY:-}}" == "1" ]]; then
+if [[ "${MAZU_USE_LOCAL_ENVOY:-}" == "1" ]]; then
   echo "Local Envoy binary found. Copying into correct locations."
 
   mkdir -p "${TARGET_OUT_LINUX}"
