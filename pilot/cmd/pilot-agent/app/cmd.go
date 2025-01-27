@@ -131,13 +131,15 @@ func newProxyCommand(sds istioagent.SDSServiceFactory) *cobra.Command {
 			}
 
 			envoyOptions := envoy.ProxyConfig{
-				// LogLevel:          proxyArgs.ProxyLogLevel,
-				LogLevel:          "debug",
-				ComponentLogLevel: proxyArgs.ProxyComponentLogLevel,
+				// LogLevel: proxyArgs.ProxyLogLevel,
+				LogLevel: "debug",
+				// ComponentLogLevel: proxyArgs.ProxyComponentLogLevel,
+				ComponentLogLevel: "misc:info",
 				LogAsJSON:         loggingOptions.JSONEncoding,
 				NodeIPs:           proxyArgs.IPAddresses,
-				Sidecar:           proxyArgs.Type == model.SidecarProxy,
-				OutlierLogPath:    proxyArgs.OutlierLogPath,
+				// TODO: add the pod ports here
+				Sidecar:        proxyArgs.Type == model.SidecarProxy,
+				OutlierLogPath: proxyArgs.OutlierLogPath,
 			}
 			agentOptions := options.NewAgentOptions(&proxyArgs, proxyConfig, sds)
 			agent := istioagent.NewAgent(proxyConfig, agentOptions, secOpts, envoyOptions)
