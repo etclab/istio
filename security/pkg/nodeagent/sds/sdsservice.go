@@ -17,6 +17,7 @@ package sds
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"sync"
@@ -125,15 +126,10 @@ func newSDSService(st security.SecretManager, options *security.Options, pkpConf
 
 var version uberatomic.Uint64
 
-// okay what is this generating?
-// - converts the secret item to an envoy secret
-// who is this generating for?
-// - envoy
-// who calls this method?
-// - there's a Process() method that calls this in reponse to a discovery request
-// what triggers this method?
-// - a discovery request probably from envoy?
+// convert secret item to envoy secrets
+// in reponse to DiscoveryReqeust from envoy
 func (s *sdsservice) generate(resourceNames []string) (*discovery.DiscoveryResponse, error) {
+	log.Infof("[dev] got a request for resourceNames %v", resourceNames)
 	resources := xds.Resources{}
 	for _, resourceName := range resourceNames {
 		if resourceName == security.WorkloadRbeIdentityCertResourceName {
@@ -144,6 +140,19 @@ func (s *sdsservice) generate(resourceNames []string) (*discovery.DiscoveryRespo
 			}
 
 			res := protoconv.MessageToAny(toEnvoyRbeSecret(rbeSecret))
+			resources = append(resources, &discovery.Resource{
+				Name:     resourceName,
+				Resource: res,
+			})
+		} else if resourceName == security.RbePodValidationMap {
+			log.Infof("[dev] got a request for rbe pod validation map %v", resourceName)
+			rbeSecret := s.st.(*cache.SecretManagerClient).GetRbeCachedSecret(resourceName)
+			if rbeSecret == nil {
+				return nil, fmt.Errorf("[dev] failed to get RBE secret for %v", resourceName)
+			}
+
+			res := protoconv.MessageToAny(toEnvoyRbeGenericSecret(rbeSecret))
+			log.Infof("[dev] got a response for rbe pod validation map %v", res)
 			resources = append(resources, &discovery.Resource{
 				Name:     resourceName,
 				Resource: res,
@@ -166,7 +175,6 @@ func (s *sdsservice) generate(resourceNames []string) (*discovery.DiscoveryRespo
 			Resource: res,
 		})
 		}
-
 	}
 	return &discovery.DiscoveryResponse{
 		TypeUrl:     model.SecretType,
@@ -266,6 +274,8 @@ func (w *Watch) requested(secretName string) bool {
 }
 
 func (c *Context) Process(req *discovery.DiscoveryRequest) error {
+	log.Infof("[dev] processing request %s", req.String())
+
 	shouldRespond, delta := xds.ShouldRespond(c.Watcher(), c.XdsConnection().ID(), req)
 	if !shouldRespond {
 		return nil
@@ -324,7 +334,6 @@ func toEnvoyRbeSecret(s *security.RbeSecretItem) *tls.Secret {
 	secret := &tls.Secret{
 		Name: s.ResourceName,
 	}
-	// TODO: this is only TLS certificate; I need to send arbitrary data/secret to envoy
 	secret.Type = &tls.Secret_TlsCertificate{
 		TlsCertificate: &tls.TlsCertificate{
 			CertificateChain: &core.DataSource{
@@ -335,6 +344,29 @@ func toEnvoyRbeSecret(s *security.RbeSecretItem) *tls.Secret {
 			PrivateKey: &core.DataSource{
 				Specifier: &core.DataSource_InlineBytes{
 					InlineBytes: s.PrivateKey,
+				},
+			},
+		},
+	}
+	return secret
+}
+
+func toEnvoyRbeGenericSecret(s *security.RbeSecretItem) *tls.Secret {
+	secret := &tls.Secret{
+		Name: s.ResourceName,
+	}
+
+	jsonMap, err := json.Marshal(s.PodValidationMap)
+	if err != nil {
+		log.Infof("[dev] failed to marshal pod validation map %v", err)
+		return nil
+	}
+
+	secret.Type = &tls.Secret_GenericSecret{
+		GenericSecret: &tls.GenericSecret{
+			Secret: &core.DataSource{
+				Specifier: &core.DataSource_InlineBytes{
+					InlineBytes: jsonMap,
 				},
 			},
 		},

@@ -357,7 +357,6 @@ func registerWorkloadAtKeyCurator() {
 
 }
 
-// mark
 // Run is a non-blocking call which returns either an error or a function to await for completion.
 func (a *Agent) Run(ctx context.Context) (func(), error) {
 	var err error
@@ -559,6 +558,7 @@ func (a *Agent) initSdsServer() error {
 		a.secretCache.RegisterSecretHandler(a.sdsServer.OnSecretUpdate)
 	}
 
+	// why was this allowed only in the sidecar proxy?
 	if a.cfg.ProxyType == model.SidecarProxy {
 	go func() {
 		// TODO: enable this to renew certificates before they expire
@@ -602,6 +602,8 @@ func (a *Agent) initSdsServer() error {
 
 					log.Infof("[dev] printing pod validity map for all pods")
 					log.Infof("%+v", podsValidity)
+
+					a.secretCache.RegisterPodValidityMap(podsValidity)
 
 					a.podsValidityLock.Lock()
 					a.podsValidity = podsValidity

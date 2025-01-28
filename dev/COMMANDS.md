@@ -73,3 +73,12 @@
 
 
 - Logs are usually added at the `Infof` level: [here's](https://github.com/etclab/istio/commit/2390af68f7e1e93755313d081ae59b2887d5b912#diff-31c475bbc33537cd99e6c4e87b7e33dd04dd1a14b3135bcc04d864df3338b374R313) an example of it. To make sure your setup is correct you can try logging a tag/prefix and see if it shows up in the logs.
+
+- Replace all `proxyv2` images with your custom image. Replace the `imageURL` returned by [this function](https://github.com/etclab/istio/blob/251ddac3cb5e568b537ab411ae7d1d83b735a509/pkg/kube/inject/inject.go#L352) with:
+```
+func imageURL(hub, imageName, tag, imageType string) string {
+	// imageUrl := hub + "/" + imageName + ":" + updateImageTypeIfPresent(tag, imageType)
+	// return imageUrl
+	return "docker.io/atosh502/proxyv2:atosh502"
+}
+``` 

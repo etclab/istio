@@ -120,6 +120,8 @@ func VerifyServiceAccountToken(token string) error {
 		return fmt.Errorf("[dev] failed to create token review: %v", err)
 	}
 
+	log.Infof("[dev] token review result: %+v", result)
+
 	// extract service account, pod name, authenticated status, and pod uid
 	activated := result.Status.Authenticated
 	username := result.Status.User.Username
