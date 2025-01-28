@@ -1,0 +1,18 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: token-review-binding
+subjects:
+- kind: Group
+  name: system:serviceaccounts:default
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: token-review-role
+  apiGroup: rbac.authorization.k8s.io
+
+# Apply:
+# kubectl apply -f token-role-binding.yaml
+
+# Check if ratings has access to token-review:
+# kubectl auth can-i --list --as=system:serviceaccount:default:bookinfo-ratings
