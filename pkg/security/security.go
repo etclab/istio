@@ -103,6 +103,8 @@ const (
 	// resource name to identity the workload identity certificate
 	WorkloadRbeIdentityCertResourceName = "rbeIdentity"
 
+	RbePodValidationMap = "rbePodValidation"
+
 	// GCE is Credential fetcher type of Google plugin
 	GCE = "GoogleComputeEngine"
 
@@ -318,12 +320,13 @@ type SecretItem struct {
 }
 
 type RbeSecretItem struct {
-	Certificate []byte
-	PrivateKey  []byte
-	User        *rbe.User
-	Pp          *rbe.PublicParams
-	Openings    [][]*bls.G1
-	Commitments []*bls.G1
+	Certificate      []byte
+	PrivateKey       []byte
+	User             *rbe.User
+	Pp               *rbe.PublicParams
+	Openings         [][]*bls.G1
+	Commitments      []*bls.G1
+	PodValidationMap map[string]bool
 
 	ResourceName string // rbeIdentity
 	CreatedTime  time.Time

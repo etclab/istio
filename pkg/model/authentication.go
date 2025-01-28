@@ -75,8 +75,8 @@ var (
 					},
 				},
 			},
-			ResourceApiVersion:  core.ApiVersion_V3,
-			InitialFetchTimeout: durationpb.New(time.Second * 0),
+			ResourceApiVersion: core.ApiVersion_V3,
+			// InitialFetchTimeout: durationpb.New(time.Second * 0),
 		},
 	}
 	rbeIdentitySDSConfig = &tls.SdsSecretConfig{
@@ -110,9 +110,10 @@ func ConstructSdsSecretConfig(name string) *tls.SdsSecretConfig {
 
 	if name == SDSDefaultResourceName {
 		return defaultSDSConfig
+		// return rbeIdentitySDSConfig // returning this instead of `default` secret
 	}
 	if name == SDSRootResourceName {
-		return rootSDSConfig
+		return rootSDSConfig // in our custom validator there's no trusted CA
 	}
 	if name == SDSRbeIdentityResourceName {
 		return rbeIdentitySDSConfig

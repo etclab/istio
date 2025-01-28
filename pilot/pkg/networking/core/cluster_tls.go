@@ -162,16 +162,109 @@ func (cb *ClusterBuilder) buildUpstreamClusterTLSContext(opts *buildClusterOpts,
 
 		tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs = append(tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs,
 			sec_model.ConstructSdsSecretConfig(sec_model.SDSDefaultResourceName))
-		// tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs = append(tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs,
-		// 	sec_model.ConstructSdsSecretConfig("rbeIdentity"))
+
+		// rbeConfig := map[string]interface{}{
+		// 	"pod_validity_sds": map[string]interface{}{
+		// 		"name": "rbePodValidation",
+		// 		"sds_config": map[string]interface{}{
+		// 			"api_config_source": map[string]interface{}{
+		// 				"api_type":              "GRPC",
+		// 				"transport_api_version": "V3",
+		// 				"grpc_services": []interface{}{
+		// 					map[string]interface{}{
+		// 						"envoy_grpc": map[string]interface{}{
+		// 							"cluster_name": "sds-grpc",
+		// 						},
+		// 					},
+		// 				},
+		// 				"set_node_on_first_message_only": true,
+		// 			},
+		// 			// "initial_fetch_timeout": "0s",
+		// 			"resource_api_version": "V3",
+		// 		},
+		// 	},
+		// }
+
+		// rbeStruct, err := structpb.NewStruct(rbeConfig)
+		// if err != nil {
+		// 	log.Errorf("[dev] Failed to create RBE struct: %v", err)
+		// }
+
+		// typedStruct := &udpa.TypedStruct{
+		// 	TypeUrl: "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.RBECertValidatorConfig",
+		// 	Value:   rbeStruct,
+		// }
+
+		// typedStructAny, err := anypb.New(typedStruct)
+		// if err != nil {
+		// 	log.Errorf("[dev] Failed to create TypedStructAny: %v", err)
+		// }
+		// log.Infof("[dev] typed struct any: %v", typedStructAny)
+
+		// defaultValidationContext := &tlsv3.CertificateValidationContext{
+		// 	MatchSubjectAltNames: util.StringToExactMatch(tls.SubjectAltNames),
+		// 	CustomValidatorConfig: &core.TypedExtensionConfig{
+		// 		Name:        "envoy.tls.cert_validator.rbe",
+		// 		TypedConfig: typedStructAny,
+		// 	},
+		// }
 
 		tlsContext.CommonTlsContext.ValidationContextType = &tlsv3.CommonTlsContext_CombinedValidationContext{
 			CombinedValidationContext: &tlsv3.CommonTlsContext_CombinedCertificateValidationContext{
-				DefaultValidationContext:         &tlsv3.CertificateValidationContext{MatchSubjectAltNames: util.StringToExactMatch(tls.SubjectAltNames)},
+				DefaultValidationContext: &tlsv3.CertificateValidationContext{
+					MatchSubjectAltNames: util.StringToExactMatch(tls.SubjectAltNames),
+					// CustomValidatorConfig: &core.TypedExtensionConfig{
+					// 	Name:        "envoy.tls.cert_validator.rbe",
+					// 	TypedConfig: typedStructAny,
+					// },
+				},
 				ValidationContextSdsSecretConfig: sec_model.ConstructSdsSecretConfig(sec_model.SDSRootResourceName),
-				// ValidationContextSdsSecretConfig: sec_model.ConstructSdsSecretConfig("rbeIdentity"),
 			},
 		}
+
+		// TODO: we'll only validate server's certificate for now
+		// rbeSecretConfig := new(tlsv3.SdsSecretConfig)
+		// if cb.sidecarProxy() {
+		// 	// TODO: is there a better way to do this?
+		// 	// get cluster namespace; `default` namespace is where services are deployed
+		// 	systemNamespaces := []string{"istio-system", "kube-node-lease", "kube-public", "kube-system"}
+		// 	userservices := []string{"productpage", "ratings", "reviews", "details"}
+		// 	istioMetadata := c.cluster.Metadata.FilterMetadata["istio"]
+		// 	values := istioMetadata.GetFields()["services"].GetListValue().Values
+		// 	serviceName := values[0].GetStructValue().GetFields()["name"].GetStringValue()
+		// 	namespace := values[0].GetStructValue().GetFields()["namespace"].GetStringValue()
+		// 	if !slices.Contains(systemNamespaces, namespace) && slices.Contains(userservices, serviceName) {
+		// 		log.Infof("[dev] setting rbeIdentity for cluster: %s in namespace: %s, for service: %s", c.cluster.Name, namespace, serviceName)
+		// 		// maybe replace the default certificate with the rbeIdentity certificate?
+		// 		rbeSecretConfig = sec_model.ConstructSdsSecretConfig("rbeIdentity")
+		// 	}
+		// }
+
+		// // client context so only a single cert is supported
+		// // https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/transport_sockets/tls/v3/tls.proto#extensions-transport-sockets-tls-v3-commontlscontext
+		// if rbeSecretConfig != nil {
+		// 	tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs = append(tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs, rbeSecretConfig)
+		// } else {
+		// 	tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs = append(tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs,
+		// 		sec_model.ConstructSdsSecretConfig(sec_model.SDSDefaultResourceName))
+		// }
+
+		// if rbeSecretConfig != nil {
+		// 	tlsContext.CommonTlsContext.ValidationContextType = &tlsv3.CommonTlsContext_CombinedValidationContext{
+		// 		CombinedValidationContext: &tlsv3.CommonTlsContext_CombinedCertificateValidationContext{
+		// 			DefaultValidationContext:         &tlsv3.CertificateValidationContext{MatchSubjectAltNames: util.StringToExactMatch(tls.SubjectAltNames)},
+		// 			ValidationContextSdsSecretConfig: rbeSecretConfig,
+		// 		},
+		// 	}
+		// } else {
+		// 	tlsContext.CommonTlsContext.ValidationContextType = &tlsv3.CommonTlsContext_CombinedValidationContext{
+		// 		CombinedValidationContext: &tlsv3.CommonTlsContext_CombinedCertificateValidationContext{
+		// 			DefaultValidationContext:         &tlsv3.CertificateValidationContext{MatchSubjectAltNames: util.StringToExactMatch(tls.SubjectAltNames)},
+		// 			ValidationContextSdsSecretConfig: sec_model.ConstructSdsSecretConfig(sec_model.SDSRootResourceName),
+		// 		},
+		// 	}
+		// }
+
 		// Set default SNI of cluster name for istio_mutual if sni is not set.
 		if len(tlsContext.Sni) == 0 {
 			tlsContext.Sni = c.cluster.Name
@@ -245,8 +338,6 @@ func constructUpstreamTLS(opts *buildClusterOpts, tls *networking.ClientTLSSetti
 			res.PrivateKeyPath = tls.PrivateKey
 			tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs = append(tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs,
 				sec_model.ConstructSdsSecretConfig(res.GetResourceName()))
-			// tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs = append(tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs,
-			// 	sec_model.ConstructSdsSecretConfig("rbeIdentity"))
 		}
 		// If tls.CaCertificate or CaCertificate in Metadata isn't configured, or tls.InsecureSkipVerify is true,
 		// don't set up SdsSecretConfig
@@ -261,6 +352,8 @@ func constructUpstreamTLS(opts *buildClusterOpts, tls *networking.ClientTLSSetti
 					},
 				}
 			}
+			// used to verify a client's certificate
+			// we'll just ignore the ROOTCA cert during validation
 			tlsContext.CommonTlsContext.ValidationContextType = &tlsv3.CommonTlsContext_CombinedValidationContext{
 				CombinedValidationContext: &tlsv3.CommonTlsContext_CombinedCertificateValidationContext{
 					DefaultValidationContext:         defaultValidationContext,

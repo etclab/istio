@@ -559,7 +559,8 @@ func (a *Agent) initSdsServer() error {
 		a.secretCache.RegisterSecretHandler(a.sdsServer.OnSecretUpdate)
 	}
 
-	if a.cfg.ProxyType == model.SidecarProxy {
+	// why was this allowed only in the sidecar proxy?
+	// if a.cfg.ProxyType == model.SidecarProxy {
 	go func() {
 		// TODO: enable this to renew certificates before they expire
 		// TODO: how would you handle unregistering ids from key curator?
@@ -576,7 +577,7 @@ func (a *Agent) initSdsServer() error {
 		})
 		a.secretCache.UpdateUserOpenings()
 	}()
-	}
+	// }
 
 	ticker := time.NewTicker(10 * time.Second)
 	quit := make(chan struct{}) // close this when agent quits
@@ -602,6 +603,8 @@ func (a *Agent) initSdsServer() error {
 
 					log.Infof("[dev] printing pod validity map for all pods")
 					log.Infof("%+v", podsValidity)
+
+					a.secretCache.RegisterPodValidityMap(podsValidity)
 
 					a.podsValidityLock.Lock()
 					a.podsValidity = podsValidity

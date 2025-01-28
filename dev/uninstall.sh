@@ -1,0 +1,1 @@
+go run ./istioctl/cmd/istioctl uninstall -y --purge

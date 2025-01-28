@@ -1,0 +1,1 @@
+kubectl logs -n istio-system $(kubectl get pods -n istio-system --selector=app=istio-ingressgateway -o jsonpath='{.items[0].metadata.name}') -c istio-proxy > ingress.log

@@ -74,13 +74,13 @@ func (kcs *KeyCuratorServer) FetchUpdate(_ context.Context, in *pb.UpdateRequest
 
 func (kcs *KeyCuratorServer) RegisterUser(_ context.Context, in *pb.RegisterRequest) (*pb.UserOpeningResponse, error) {
 	log.Infof("[dev] received register request for user with id: %d", in.GetId())
-	log.Infof("[dev] the register request %v", in)
+	// log.Infof("[dev] the register request %v", in)
 
 	id := int(in.GetId())
 	publicKey := new(bls.G1)
 	publicKey.SetBytes(in.GetPublicKey().GetPoint())
 
-	log.Infof("[dev] public key %v", publicKey)
+	// log.Infof("[dev] public key %v", publicKey)
 
 	xi := make([]*bls.G1, len(in.GetXi()))
 	for i, v := range in.GetXi() {
@@ -93,7 +93,7 @@ func (kcs *KeyCuratorServer) RegisterUser(_ context.Context, in *pb.RegisterRequ
 		}
 	}
 
-	log.Infof("[dev] xi values %v", xi)
+	// log.Infof("[dev] xi values %v", xi)
 
 	kcs.kc.RegisterUser(id, publicKey, xi)
 
