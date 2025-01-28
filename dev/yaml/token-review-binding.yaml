@@ -15,4 +15,4 @@ roleRef:
 # kubectl apply -f token-role-binding.yaml
 
 # Check if ratings has access to token-review:
-# kubectl auth can-i --list --as=system:serviceaccount:default:bookinfo-ratings
+# kubectl auth can-i create tokenreviews.authentication.k8s.io --as=system:serviceaccount:default:bookinfo-ratings
