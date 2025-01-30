@@ -5,6 +5,7 @@ package kcclient
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	bls "github.com/cloudflare/circl/ecc/bls12381"
 	"github.com/etclab/rbe"
@@ -111,12 +112,12 @@ func NewKCClient(opts *security.Options, tlsOpts *TLSOptions) (security.KeyCurat
 	return c, nil
 }
 
-func (c *KCClient) FetchAllUpdates() ([]*bls.G1, [][]*bls.G1, error) {
+func (c *KCClient) FetchAllUpdates() ([]*bls.G1, [][]*bls.G1, []*security.RbeId, error) {
 	ctx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs("ClusterID", c.opts.ClusterID))
 	updResp, err := c.client.FetchAllUpdates(ctx, &emptypb.Empty{})
 	if err != nil {
 		log.Errorf("[dev] err on FetchAllUpdates(): %v", err)
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	openings := make([][]*bls.G1, 0)
@@ -138,7 +139,25 @@ func (c *KCClient) FetchAllUpdates() ([]*bls.G1, [][]*bls.G1, error) {
 		openings = append(openings, userOpening)
 	}
 
-	return commitments, openings, nil
+	history := updResp.GetHistory()
+	allRbeIds := make([]*security.RbeId, len(history))
+	for _, registrationEvent := range history {
+		// TODO: make everything string
+		port, err := strconv.Atoi(registrationEvent.GetPort())
+		if err != nil {
+			log.Infof("[dev] err on converting port to int: %v", err)
+			continue
+		}
+
+		rbeId := &security.RbeId{
+			Token: registrationEvent.GetToken(),
+			Ip:    registrationEvent.GetIp(),
+			Port:  port,
+		}
+		allRbeIds = append(allRbeIds, rbeId)
+	}
+
+	return commitments, openings, allRbeIds, nil
 }
 
 func (c *KCClient) FetchUpdate(id int32) ([]*bls.G1, []*bls.G1, error) {
@@ -177,7 +196,8 @@ func getCommitmentsOpenings(uoResp *pb.UserOpeningResponse) ([]*bls.G1, []*bls.G
 	return commitments, opening
 }
 
-func (c *KCClient) RegisterUser(user *rbe.User, id int32) ([]*bls.G1, []*bls.G1, error) {
+// func (c *KCClient) RegisterUser(user *rbe.User, id int32) ([]*bls.G1, []*bls.G1, error) {
+func (c *KCClient) RegisterUser(user *rbe.User, rbeId *security.RbeId) ([]*bls.G1, []*bls.G1, error) {
 	xi := user.Xi()
 
 	xiProto := make([]*rbeproto.G1, len(xi))
@@ -189,10 +209,14 @@ func (c *KCClient) RegisterUser(user *rbe.User, id int32) ([]*bls.G1, []*bls.G1,
 		}
 	}
 
+	id := rbeId.ToNumber()
 	regReq := &pb.RegisterRequest{
 		Id:        int32(id),
 		PublicKey: &rbeproto.G1{Point: user.PublicKey().Bytes()},
 		Xi:        xiProto,
+		Ip:        rbeId.Ip,
+		Port:      strconv.Itoa(rbeId.Port),
+		Token:     rbeId.Token,
 	}
 
 	ctx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs("ClusterID", c.opts.ClusterID))

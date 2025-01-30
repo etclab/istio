@@ -2,10 +2,8 @@ package keycurator
 
 import (
 	"context"
-	"crypto/md5"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/binary"
 	"fmt"
 	"os"
 	"time"
@@ -24,34 +22,6 @@ import (
 	authenticationv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
-
-type RbeId struct {
-	Ip         string
-	Port       int
-	Nonce      string
-	ExpireTime int64
-	SpiffeId   *spiffe.Identity
-	PodUid     string
-}
-
-func (id *RbeId) String() string {
-	return fmt.Sprintf("%s|%d|%s", id.Ip, id.Port, id.SpiffeId)
-}
-
-func (id *RbeId) ToNumber() int32 {
-	return idStringToNumber(id.String())
-}
-
-// convert s to 16-bit number
-func idStringToNumber(s string) int32 {
-	data := []byte(s)
-	hash128 := md5.Sum(data) // 128 bits
-
-	hash16 := hash128[0:2] // 16 bits
-	number := binary.BigEndian.Uint16(hash16)
-
-	return int32(number)
-}
 
 func GenerateNonce() (string, error) {
 	nonceBytes := make([]byte, 32)
@@ -230,14 +200,14 @@ func HashToGt(msg []byte) *bls.Gt {
 	return bls.Pair(g1, g2)
 }
 
-func CheckPodValidity(pd *PodDetail, secret *security.RbeSecretItem) (result bool) {
+func CheckPodValidity(rbeId *security.RbeId, secret *security.RbeSecretItem) (result bool) {
 	thisUser := secret.User
 	pp := secret.Pp
 
 	// TODO: defer-recover is used to return a default value on panic
 	defer func() {
 		if err := recover(); err != nil { //catch
-			log.Infof("[dev] error validating pod with detail: %+v", pd)
+			log.Infof("[dev] error validating pod with detail: %+v", rbeId)
 			log.Infof("[dev] error during validation was %+v", err)
 		}
 	}()
@@ -245,10 +215,10 @@ func CheckPodValidity(pd *PodDetail, secret *security.RbeSecretItem) (result boo
 	nonce := []byte(fmt.Sprintf("%d", time.Now().Unix()))
 	nonceHash := HashToGt(nonce)
 
-	otherRbeId := &RbeId{
-		Ip:       pd.IP,
-		Port:     pd.Port,
-		SpiffeId: pd.SpiffId,
+	otherRbeId := &security.RbeId{
+		Ip:    rbeId.Ip,
+		Port:  rbeId.Port,
+		Token: rbeId.Token,
 	}
 
 	idOtherUser := int(otherRbeId.ToNumber())
@@ -263,7 +233,9 @@ func CheckPodValidity(pd *PodDetail, secret *security.RbeSecretItem) (result boo
 	cipherText := thisUser.Encrypt(idOtherUser, nonceHash)
 
 	sk := new(bls.Scalar)
-	sk.SetUint64(uint64(idOtherUser))
+	// sk.SetUint64(uint64(idOtherUser))
+	sk.SetUint64(uint64(otherRbeId.SecretKey()))
+
 	otherUser := rbe.NewUserWithSecret(pp, idOtherUser, sk)
 
 	commitments := secret.Commitments

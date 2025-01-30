@@ -24,6 +24,9 @@ message RegisterRequest {
     int32 id = 1;
     rbe.proto.G1 publicKey = 2;
     repeated rbe.proto.G1 xi = 3;
+    string ip = 4;
+    string port = 5;
+    string token = 6;
 }
 
 message UserOpeningResponse {
@@ -42,4 +45,14 @@ message Opening {
 message AllUpdatesResponse {
     repeated rbe.proto.G1 allCommitments = 1;
     repeated Opening allOpenings = 2;
+    repeated RegistrationEvent history = 3;
+}
+
+message RegistrationEvent {
+    string token = 1;
+    string ip = 2;
+    string port = 3;
+    int32 id = 4;
+    rbe.proto.G1 publicKey = 5;
+    repeated rbe.proto.G1 xi = 6;
 }

@@ -21,6 +21,7 @@ import (
 	"crypto/tls"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"encoding/json"
 	"fmt"
 	"math/rand/v2"
 	"os"
@@ -392,7 +393,6 @@ func (sc *SecretManagerClient) UpdateUserOpenings() {
 	if rbeSecret != nil {
 		id := int32(rbeSecret.User.Id())
 
-		// TODO: fetch public params with updates
 		pp, err := sc.kcClient.FetchPublicParams()
 		if err != nil {
 			log.Errorf("[dev] err on FetchPublicParams: %v", err)
@@ -430,7 +430,7 @@ func (sc *SecretManagerClient) UpdateUserOpenings() {
 		// for all users
 		timeBeforeFAU = time.Now()
 
-		commitments, allOpenings, err := sc.kcClient.FetchAllUpdates()
+		commitments, allOpenings, allRbeIds, err := sc.kcClient.FetchAllUpdates()
 		if err != nil {
 			log.Errorf("[dev] err on FetchAllUpdates(): %v", err)
 		}
@@ -462,6 +462,34 @@ func (sc *SecretManagerClient) UpdateUserOpenings() {
 		rbeSecret.Commitments = commitments
 
 		sc.rbeCache.SetWorkload(rbeSecret)
+
+		podsValidity := map[string]bool{}
+
+		log.Infof("[dev] all rbe ids: %+v", allRbeIds)
+
+		for _, rbeId := range allRbeIds {
+			if rbeId == nil {
+				continue
+			}
+			key := fmt.Sprintf("%s|%d|%s", rbeId.Ip, rbeId.Port, rbeId.Token)
+			podsValidity[key] = kcUtil.CheckPodValidity(rbeId, rbeSecret)
+		}
+
+		log.Infof("[dev] printing pod validity map for all pods")
+		log.Infof("%+v", podsValidity)
+
+		jsonString, err := json.Marshal(podsValidity)
+		if err != nil {
+			fmt.Println("Error:", err)
+		} else {
+			fmt.Println(string(jsonString))
+		}
+		err = os.WriteFile("/etc/istio/proxy/pod_validity_data.json", jsonString, 0644)
+		if err != nil {
+			log.Errorf("[dev] err on WriteFile: %v", err)
+		}
+
+		sc.RegisterPodValidityMap(podsValidity)
 	} else {
 		log.Infof("[dev] no cached rbe secret\n")
 	}
@@ -493,7 +521,7 @@ var (
 // registers the workload's identity with the key curator
 // save the key pair, pp to the secret cache
 // TODO: what happens if a pod restarts due to error and have the same identity?
-func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(rbeId *kcUtil.RbeId,
+func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(rbeId *security.RbeId,
 	isCertRenewal bool) (secret *security.RbeSecretItem, err error) {
 	cacheLog.Infof("[dev] generating workload rbe secrets")
 
@@ -529,12 +557,13 @@ func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(rbeId *kcUtil.RbeId,
 		}
 
 		sk := new(bls.Scalar)
-		sk.SetUint64(uint64(id))
+		sk.SetUint64(uint64(rbeId.SecretKey()))
 
 		// create user
 		user = rbe.NewUserWithSecret(pp, int(id), sk)
 
-		commitments, opening, err := sc.kcClient.RegisterUser(user, id)
+		// TODO: during registration send the ip, port, token, id, and public key (user includes th public key?)
+		commitments, opening, err := sc.kcClient.RegisterUser(user, rbeId)
 		if err != nil {
 			log.Errorf("[dev] err on RegisterUser(): %v", err)
 			return nil, err
@@ -558,24 +587,9 @@ func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(rbeId *kcUtil.RbeId,
 			Id:    AdminTokenOID,
 			Value: []byte(adminToken),
 		},
-		{
-			Id:    SpiffeIdOID,
-			Value: []byte(rbeId.SpiffeId.String()),
-		},
-		{
-			Id:    SerialOID,
-			Value: []byte(rbeId.Nonce),
-		},
-		{
-			Id:    SignatureOID,
-			Value: []byte("signed"),
-		},
-		{
-			Id:    PodUidOID,
-			Value: []byte(rbeId.PodUid),
-		},
 	}
 
+	// TODO: what other information do I need within the cert?
 	options := pkiutil.CertOptions{
 		Host:       rbeId.SpiffeId.String(),
 		RSAKeySize: sc.configOptions.WorkloadRSAKeySize,

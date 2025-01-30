@@ -22,6 +22,7 @@ import (
 	"google.golang.org/grpc"
 
 	mesh "istio.io/api/mesh/v1alpha1"
+	"istio.io/istio/pkg/log"
 	"istio.io/istio/pkg/security"
 	"istio.io/istio/pkg/uds"
 )
@@ -43,6 +44,8 @@ type Server struct {
 
 // NewServer creates and starts the Grpc server for SDS.
 func NewServer(options *security.Options, workloadSecretCache security.SecretManager, pkpConf *mesh.PrivateKeyProvider) *Server {
+	log.Infof("[dev] lets see what comes in to NewServer() %+v, %+v & %+v", options, workloadSecretCache, pkpConf)
+
 	s := &Server{stopped: atomic.NewBool(false)}
 	s.workloadSds = newSDSService(workloadSecretCache, options, pkpConf)
 	s.initWorkloadSdsService()

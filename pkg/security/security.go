@@ -16,6 +16,8 @@ package security
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/binary"
 	"fmt"
 	"net/http"
 	"os"
@@ -30,6 +32,7 @@ import (
 
 	"istio.io/istio/pkg/env"
 	istiolog "istio.io/istio/pkg/log"
+	"istio.io/istio/pkg/spiffe"
 )
 
 var securityLog = istiolog.RegisterScope("security", "security debugging")
@@ -283,9 +286,9 @@ type Client interface {
 type KeyCuratorClient interface {
 	Close()
 	FetchPublicParams() (*rbe.PublicParams, error)
-	RegisterUser(*rbe.User, int32) ([]*bls.G1, []*bls.G1, error)
+	RegisterUser(*rbe.User, *RbeId) ([]*bls.G1, []*bls.G1, error)
 	FetchUpdate(int32) ([]*bls.G1, []*bls.G1, error)
-	FetchAllUpdates() ([]*bls.G1, [][]*bls.G1, error)
+	FetchAllUpdates() ([]*bls.G1, [][]*bls.G1, []*RbeId, error)
 }
 
 type RBESecretManager interface {
@@ -317,6 +320,38 @@ type SecretItem struct {
 	CreatedTime time.Time
 
 	ExpireTime time.Time
+}
+
+type RbeId struct {
+	Ip         string
+	Port       int
+	ExpireTime int64
+	SpiffeId   *spiffe.Identity
+	Token      string
+}
+
+// FIXME: this doesn't need to be truncated to 16-bit number
+func (id *RbeId) SecretKey() int32 {
+	return idStringToNumber(fmt.Sprintf("%s|%d|%s", id.Ip, id.Port, id.Token))
+}
+
+func (id *RbeId) String() string {
+	return id.Token
+}
+
+func (id *RbeId) ToNumber() int32 {
+	return idStringToNumber(id.String())
+}
+
+// convert s to 16-bit number
+func idStringToNumber(s string) int32 {
+	data := []byte(s)
+	hash128 := md5.Sum(data) // 128 bits
+
+	hash16 := hash128[0:2] // 16 bits
+	number := binary.BigEndian.Uint16(hash16)
+
+	return int32(number)
 }
 
 type RbeSecretItem struct {
