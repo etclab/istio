@@ -27,7 +27,8 @@ ARG SIDECAR=envoy
 # Copy Envoy bootstrap templates used by pilot-agent
 COPY envoy_bootstrap.json /var/lib/istio/envoy/envoy_bootstrap_tmpl.json
 
-COPY pod_validity_data.json /tmp/pod_validity_data.json
+# Copy initial Pod Valdidity Data used by RBE Validator
+# COPY pod_validity_data.json /tmp/pod_validity_data.json
 
 # Install Envoy.
 ARG TARGETARCH
@@ -42,9 +43,9 @@ COPY ${TARGETARCH:-amd64}/pilot-agent /usr/local/bin/pilot-agent
 COPY --from=builder /go/bin/dlv /usr/local/bin/dlv
 
 # The pilot-agent will bootstrap Envoy.
-# ENTRYPOINT ["/usr/local/bin/pilot-agent"]
+ENTRYPOINT ["/usr/local/bin/pilot-agent"]
 
-ENTRYPOINT [ "sh", "-c", "cp -v /tmp/pod_validity_data.json /etc/istio/proxy/ && exec /usr/local/bin/pilot-agent \"$@\"", "--" ]
+# ENTRYPOINT [ "sh", "-c", "cp -v /tmp/pod_validity_data.json /etc/istio/proxy/ && exec /usr/local/bin/pilot-agent \"$@\"", "--" ]
 
 # EXPOSE 40000
 # ENTRYPOINT ["/usr/local/bin/dlv", "--continue", "--accept-multiclient", "--listen=:40000", "--check-go-version=false", "--headless=true", "--api-version=2", "--log=true", "--log-output=debugger,debuglineerr,gdbwire,lldbout,rpc", "exec", "/usr/local/bin/pilot-agent", "--"]
