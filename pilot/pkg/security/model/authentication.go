@@ -151,7 +151,7 @@ func ApplyToCommonTLSContext(tlsContext *tls.CommonTlsContext, proxy *model.Prox
 
 	rbeConfig := map[string]interface{}{
 		"pod_validity_map": map[string]interface{}{
-			"filename": "pod_validity_data.json",
+			"filename": "/etc/istio/proxy/pod_validity_data.json",
 		},
 	}
 

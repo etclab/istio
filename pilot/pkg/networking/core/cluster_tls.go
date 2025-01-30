@@ -205,7 +205,7 @@ func (cb *ClusterBuilder) buildUpstreamClusterTLSContext(opts *buildClusterOpts,
 
 		rbeConfig := map[string]interface{}{
 			"pod_validity_map": map[string]interface{}{
-				"filename": "pod_validity_data.json",
+				"filename": "/etc/istio/proxy/pod_validity_data.json",
 			},
 		}
 

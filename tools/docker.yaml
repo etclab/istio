@@ -30,7 +30,7 @@ images:
   dockerfile: pilot/docker/Dockerfile.proxyv2
   files:
   - tools/packaging/common/envoy_bootstrap.json
-  - pilot/docker/pod_validity_data.json
+  - dev/json/pod_validity_data.json
   - ${TARGET_OUT_LINUX}/${RELEASE_MODE}/${SIDECAR}
   targets:
   - ${TARGET_OUT_LINUX}/pilot-agent
