@@ -145,6 +145,8 @@ func ApplyToCommonTLSContext(tlsContext *tls.CommonTlsContext, proxy *model.Prox
 	// TODO: if subjectAltName ends with *, create a prefix match as well.
 	// TODO: if user explicitly specifies SANs - should we alter his explicit config by adding all spifee aliases?
 	matchSAN := util.StringToExactMatch(subjectAltNames)
+	log.Infof("[dev] ApplyToCommonTLSContext: subject alt names : %v", subjectAltNames)
+
 	if len(trustDomainAliases) > 0 {
 		matchSAN = append(matchSAN, util.StringToPrefixMatch(AppendURIPrefixToTrustDomain(trustDomainAliases))...)
 	}
@@ -214,6 +216,10 @@ func ApplyToCommonTLSContext(tlsContext *tls.CommonTlsContext, proxy *model.Prox
 			}
 		}
 
+		// log.Infof("[dev] proxy type: %v", proxy.Type)
+		// log.Infof("[dev] proxy id: %v", proxy.ID)
+		// log.Infof("[dev] proxy labels: %v", proxy.Labels)
+
 		if proxy.Type == model.SidecarProxy {
 			defaultValidationContext.CustomValidatorConfig = &core.TypedExtensionConfig{
 				Name:        "envoy.tls.cert_validator.rbe",
@@ -232,10 +238,9 @@ func ApplyToCommonTLSContext(tlsContext *tls.CommonTlsContext, proxy *model.Prox
 
 	}
 
+	log.Infof("[dev] setting default and rbeIdentity for proxy: \n metadata: %v", proxy.Metadata)
+
 	if proxy.Type == model.SidecarProxy {
-		// tlsContext.TlsCertificateSdsSecretConfigs = []*tls.SdsSecretConfig{
-		// 	ConstructSdsSecretConfig(model.GetOrDefault(res.GetResourceName(), SDSDefaultResourceName)),
-		// }
 		tlsContext.TlsCertificateSdsSecretConfigs = append(tlsContext.TlsCertificateSdsSecretConfigs,
 			ConstructSdsSecretConfig("rbeIdentity"),
 		)
@@ -244,6 +249,21 @@ func ApplyToCommonTLSContext(tlsContext *tls.CommonTlsContext, proxy *model.Prox
 			ConstructSdsSecretConfig(model.GetOrDefault(res.GetResourceName(), SDSDefaultResourceName)),
 		}
 	}
+
+	// if proxy.Type == model.SidecarProxy {
+	// 	tlsContext.TlsCertificateSdsSecretConfigs = []*tls.SdsSecretConfig{
+	// 		ConstructSdsSecretConfig(model.GetOrDefault(res.GetResourceName(), SDSDefaultResourceName)),
+	// 	}
+	// 	tlsContext.TlsCertificateSdsSecretConfigs = append(tlsContext.TlsCertificateSdsSecretConfigs,
+	// 		ConstructSdsSecretConfig("rbeIdentity"),
+	// 	)
+	// } else {
+	// 	tlsContext.TlsCertificateSdsSecretConfigs = []*tls.SdsSecretConfig{
+	// 		ConstructSdsSecretConfig(model.GetOrDefault(res.GetResourceName(), SDSDefaultResourceName)),
+	// 	}
+	// }
+
+	// log.Infof("[dev] final tls context: %+v", tlsContext)
 }
 
 // ApplyCustomSDSToClientCommonTLSContext applies the customized sds to CommonTlsContext
