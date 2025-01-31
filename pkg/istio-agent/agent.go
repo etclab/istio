@@ -321,6 +321,10 @@ func (a *Agent) initializeEnvoyAgent(_ context.Context) error {
 		if err != nil {
 			return fmt.Errorf("failed to generate bootstrap config: %v", err)
 		}
+		// out = etc/istio/proxy/envoy-rev.json
+		log.Infof("[dev] envoy config file is stored at: %s", out)
+		// what kind of config is this? and why does it need to be saved somewhere?
+		// what exactly is in this file?
 		a.envoyOpts.ConfigPath = out
 		a.envoyOpts.ConfigCleanup = true
 	}
@@ -337,7 +341,7 @@ func (a *Agent) initializeEnvoyAgent(_ context.Context) error {
 	// used.
 	a.envoyOpts.AgentIsRoot = os.Getuid() == 0 && strings.HasSuffix(a.cfg.DNSAddr, ":53")
 
-	envoyProxy := envoy.NewProxy(a.envoyOpts)
+	envoyProxy := envoy.NewProxy(a.envoyOpts) // mark function
 
 	drainDuration := a.proxyConfig.TerminationDrainDuration.AsDuration()
 	localHostAddr := localHostIPv4
@@ -382,6 +386,7 @@ func (a *Agent) Run(ctx context.Context) (func(), error) {
 	// 4. if they are not different, start the Istio default SDS server and use it.
 
 	// Correctness check - we do not want people sneaking paths into this
+	// identity socket file will serve envoy the secrets?
 	if a.cfg.WorkloadIdentitySocketFile != filepath.Base(a.cfg.WorkloadIdentitySocketFile) {
 		return nil, fmt.Errorf("workload identity socket file override must be a filename, not a path: %s", a.cfg.WorkloadIdentitySocketFile)
 	}
@@ -438,7 +443,7 @@ func (a *Agent) Run(ctx context.Context) (func(), error) {
 		})
 	}
 
-	if !a.EnvoyDisabled() {
+	if !a.EnvoyDisabled() { // envoy starts here <--
 		err = a.initializeEnvoyAgent(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize envoy agent: %v", err)
@@ -485,7 +490,7 @@ func (a *Agent) getRbeUserId() (*security.RbeId, error) {
 	// ingress gateway doesn't have the pod ports set
 	port := 443 // default port
 	if len(node.Metadata.PodPorts) > 0 {
-	podPort := node.Metadata.PodPorts[0]
+		podPort := node.Metadata.PodPorts[0]
 		port = podPort.ContainerPort
 	}
 
@@ -549,22 +554,22 @@ func (a *Agent) initSdsServer() error {
 
 	// why was this allowed only in the sidecar proxy?
 	if a.cfg.ProxyType == model.SidecarProxy {
-	go func() {
-		// TODO: enable this to renew certificates before they expire
-		// TODO: how would you handle unregistering ids from key curator?
-		// TODO: think about storing all these information in a filename
-		// TODO: so that it can be readily accessed/picked up
-		a.secretCache.RegisterRbeSecretHandler(func(resourceName string) {
+		go func() {
+			// TODO: enable this to renew certificates before they expire
+			// TODO: how would you handle unregistering ids from key curator?
+			// TODO: think about storing all these information in a filename
+			// TODO: so that it can be readily accessed/picked up
+			a.secretCache.RegisterRbeSecretHandler(func(resourceName string) {
 				_, _ = a.getWorkloadRbeCerts(a.secretCache, true)
-		})
+			})
 			// register id for the first time
 			_, _ = a.getWorkloadRbeCerts(a.secretCache, false)
 
-		a.secretCache.RegisterRbeUpdateHandler(func(resourceName string) {
+			a.secretCache.RegisterRbeUpdateHandler(func(resourceName string) {
+				a.secretCache.UpdateUserOpenings()
+			})
 			a.secretCache.UpdateUserOpenings()
-		})
-		a.secretCache.UpdateUserOpenings()
-	}()
+		}()
 	}
 
 	return nil

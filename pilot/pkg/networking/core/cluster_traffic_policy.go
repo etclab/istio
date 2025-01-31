@@ -38,9 +38,16 @@ import (
 	"istio.io/istio/pkg/wellknown"
 )
 
+// who applies the traffic policy? - cluster builder based on a few options
 // applyTrafficPolicy applies the trafficPolicy defined within destinationRule,
 // which can be called for both outbound and inbound cluster, but only connection pool will be applied to inbound cluster.
 func (cb *ClusterBuilder) applyTrafficPolicy(opts buildClusterOpts) {
+	// log.Infof("[dev] what are these opts: %+v", opts)
+	// log.Infof("[dev] applying traffic policy for cluster name %v", opts.mutable.cluster.Name)
+	// log.Infof("[dev] sevice targests ")
+	// for _, target := range opts.serviceTargets {
+	// 	log.Infof("[dev] %v", target.Service.Key())
+	// }
 	connectionPool, outlierDetection, loadBalancer, tls, proxyProtocol := selectTrafficPolicyComponents(opts.policy)
 	// Connection pool settings are applicable for both inbound and outbound clusters.
 	if connectionPool == nil {
@@ -55,6 +62,9 @@ func (cb *ClusterBuilder) applyTrafficPolicy(opts buildClusterOpts) {
 			autoMTLSEnabled := opts.mesh.GetEnableAutoMtls().Value
 			tls, mtlsCtxType := cb.buildUpstreamTLSSettings(tls, opts.serviceAccounts, opts.istioMtlsSni,
 				autoMTLSEnabled, opts.meshExternal, opts.serviceMTLSMode)
+			// log.Infof("[dev] inside applyTrafficPolicy()")
+			// log.Infof("[dev] tls %+v", tls)
+			// log.Infof("[dev] mtlsCtxType %+v", mtlsCtxType)
 			cb.applyUpstreamTLSSettings(&opts, tls, mtlsCtxType)
 			cb.applyUpstreamProxyProtocol(&opts, proxyProtocol)
 		}

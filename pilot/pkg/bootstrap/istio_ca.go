@@ -201,6 +201,8 @@ func (s *Server) RunCA(grpc *grpc.Server) {
 	iss := trustedIssuer.Get()
 	aud := audience.Get()
 
+	log.Infof("[dev] before reading from ThirdPartyJwtPath iss=%v aud=%v", iss, aud)
+
 	token, err := os.ReadFile(securityModel.ThirdPartyJwtPath)
 	if err == nil {
 		tok, err := detectAuthEnv(string(token))
@@ -215,6 +217,8 @@ func (s *Server) RunCA(grpc *grpc.Server) {
 			}
 		}
 	}
+
+	log.Infof("[dev] after reading from ThirdPartyJwtPath iss=%v aud=%v", iss, aud)
 
 	// TODO: if not set, parse Istiod's own token (if present) and get the issuer. The same issuer is used
 	// for all tokens - no need to configure twice. The token may also include cluster info to auto-configure

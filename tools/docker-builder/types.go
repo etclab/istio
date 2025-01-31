@@ -186,7 +186,7 @@ func DefaultArgs() Args {
 			targets = append(targets, strings.TrimPrefix(v, "docker."))
 		}
 	}
-	pv, err := testenv.ReadDepsSHA("PROXY_REPO_SHA")
+	pv, err := testenv.ReadDepsSHA("PROXY_REPO_SHA") // where is this from?
 	if err != nil {
 		log.Warnf("failed to read proxy sha")
 		pv = "unknown"
@@ -246,7 +246,7 @@ func DefaultArgs() Args {
 		BaseVersion:       fetchBaseVersion(),
 		BaseImageRegistry: fetchIstioBaseReg(),
 		IstioVersion:      fetchIstioVersion(),
-		ProxyVersion:      pv,
+		ProxyVersion:      pv, // how is proxy version used later?
 		ZtunnelVersion:    zv,
 		Architectures:     arch,
 		Targets:           targets,

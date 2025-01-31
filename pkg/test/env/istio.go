@@ -136,7 +136,7 @@ func ReadDepsSHA(name string) (string, error) {
 		Name          string `json:"name"`
 		LastStableSHA string `json:"lastStableSHA"`
 	}
-	f := filepath.Join(IstioSrc, "istio.deps")
+	f := filepath.Join(IstioSrc, "istio.deps") // okay read it from the .deps file
 	depJSON, err := os.ReadFile(f)
 	if err != nil {
 		return "", err

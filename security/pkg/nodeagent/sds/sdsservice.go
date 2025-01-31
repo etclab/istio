@@ -72,6 +72,7 @@ type Watch struct {
 	watch *xds.WatchedResource
 }
 
+// useful method
 // newSDSService creates Secret Discovery Service which implements envoy SDS API.
 func newSDSService(st security.SecretManager, options *security.Options, pkpConf *mesh.PrivateKeyProvider) *sdsservice {
 	ret := &sdsservice{
@@ -81,11 +82,14 @@ func newSDSService(st security.SecretManager, options *security.Options, pkpConf
 		clients: make(map[string]*Context),
 	}
 
+	// okay agent needs root ca pk for cert validation?
 	ret.rootCaPath = options.CARootPath
 
 	if options.FileMountedCerts {
 		return ret
 	}
+
+	// todo: what info is present in workload certificates?
 
 	// Pre-generate workload certificates to improve startup latency and ensure that for OUTPUT_CERTS
 	// case we always write a certificate. A workload can technically run without any mTLS/CA
@@ -105,12 +109,17 @@ func newSDSService(st security.SecretManager, options *security.Options, pkpConf
 		}()
 		defer cancel()
 		_ = b.RetryWithContext(ctx, func() error {
+			// what does this workload key cert resource name mean???
+			// sdsServiceLog.Infof("pre-generate workload certificates")
+			// sdsServiceLog.Infof("[atp] Generating secret for resource: %s", security.WorkloadKeyCertResourceName)
+			// so what does this GenerateSecret method do??
 			_, err := st.GenerateSecret(security.WorkloadKeyCertResourceName)
 			if err != nil {
 				sdsServiceLog.Warnf("failed to warm certificate: %v", err)
 				return err
 			}
 
+			// sdsServiceLog.Infof("[atp] Generating secret for resource: %s", security.WorkloadKeyCertResourceName)
 			_, err = st.GenerateSecret(security.RootCertReqResourceName)
 			if err != nil {
 				sdsServiceLog.Warnf("failed to warm root certificate: %v", err)
@@ -158,24 +167,27 @@ func (s *sdsservice) generate(resourceNames []string) (*discovery.DiscoveryRespo
 				Resource: res,
 			})
 		} else {
-		secret, err := s.st.GenerateSecret(resourceName)
-		if err != nil {
-			// Typically, in Istiod, we do not return an error for a failure to generate a resource
-			// However, here it makes sense, because we are generally streaming a single resource,
-			// so sending an error will not cause a single failure to prevent the entire multiplex stream
-			// of resources, and failures here are generally due to temporary networking issues to the CA
-			// rather than a result of configuration issues, which trigger updates in Istiod when resolved.
-			// Instead, we rely on the client to retry (with backoff) on failures.
-			return nil, fmt.Errorf("failed to generate secret for %v: %v", resourceName, err)
-		}
+			secret, err := s.st.GenerateSecret(resourceName)
+			if err != nil {
+				// Typically, in Istiod, we do not return an error for a failure to generate a resource
+				// However, here it makes sense, because we are generally streaming a single resource,
+				// so sending an error will not cause a single failure to prevent the entire multiplex stream
+				// of resources, and failures here are generally due to temporary networking issues to the CA
+				// rather than a result of configuration issues, which trigger updates in Istiod when resolved.
+				// Instead, we rely on the client to retry (with backoff) on failures.
+				return nil, fmt.Errorf("failed to generate secret for %v: %v", resourceName, err)
+			}
 
-		res := protoconv.MessageToAny(toEnvoySecret(secret, s.rootCaPath, s.pkpConf))
-		resources = append(resources, &discovery.Resource{
-			Name:     resourceName,
-			Resource: res,
-		})
+			res := protoconv.MessageToAny(toEnvoySecret(secret, s.rootCaPath, s.pkpConf))
+			resources = append(resources, &discovery.Resource{
+				Name:     resourceName,
+				Resource: res,
+			})
 		}
 	}
+	log.Infof("[dev] resourceNames returned %+v", resourceNames)
+	log.Infof("[dev] resources list to return %+v", resources)
+
 	return &discovery.DiscoveryResponse{
 		TypeUrl:     model.SecretType,
 		VersionInfo: time.Now().Format(time.RFC3339) + "/" + strconv.FormatUint(version.Inc(), 10),
@@ -397,6 +409,7 @@ func toEnvoySecret(s *security.SecretItem, caRootPath string, pkpConf *mesh.Priv
 			},
 		}
 	} else {
+		// no idea what a private key provider is and how to assign one
 		switch pkpConf.GetProvider().(type) {
 		case *mesh.PrivateKeyProvider_Cryptomb:
 			crypto := pkpConf.GetCryptomb()
@@ -451,6 +464,7 @@ func toEnvoySecret(s *security.SecretItem, caRootPath string, pkpConf *mesh.Priv
 				},
 			}
 		default:
+			// should be this one
 			secret.Type = &tls.Secret_TlsCertificate{
 				TlsCertificate: &tls.TlsCertificate{
 					CertificateChain: &core.DataSource{

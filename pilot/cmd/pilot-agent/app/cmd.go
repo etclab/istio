@@ -56,6 +56,7 @@ var (
 	proxyArgs      options.ProxyArgs
 )
 
+// mark
 func NewRootCommand(sds istioagent.SDSServiceFactory) *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:          "pilot-agent",
@@ -73,7 +74,9 @@ func NewRootCommand(sds istioagent.SDSServiceFactory) *cobra.Command {
 
 	cmd.AddFlags(rootCmd)
 
+	// mark: what does proxy do with the sds?
 	proxyCmd := newProxyCommand(sds)
+
 	addFlags(proxyCmd)
 	rootCmd.AddCommand(proxyCmd)
 	rootCmd.AddCommand(requestCmd)
@@ -99,17 +102,19 @@ func newProxyCommand(sds istioagent.SDSServiceFactory) *cobra.Command {
 			// Allow unknown flags for backward-compatibility.
 			UnknownFlags: true,
 		},
-		PersistentPreRunE: configureLogging,
+		PersistentPreRunE: configureLogging, // config login before ok
 		RunE: func(c *cobra.Command, args []string) error {
 			cmd.PrintFlags(c.Flags())
 			log.Infof("Version %s", version.Info.String())
 
 			raiseLimits()
 
+			// initProxy() has some useful constants/ids related to proxy
 			err := initProxy(args)
 			if err != nil {
 				return err
 			}
+			// what exactly is proxyConfig?
 			proxyConfig, err := config.ConstructProxyConfig(proxyArgs.MeshConfigFile, proxyArgs.ServiceCluster, options.ProxyConfigEnv, proxyArgs.Concurrency)
 			if err != nil {
 				return fmt.Errorf("failed to get proxy config: %v", err)
@@ -141,6 +146,12 @@ func newProxyCommand(sds istioagent.SDSServiceFactory) *cobra.Command {
 				Sidecar:        proxyArgs.Type == model.SidecarProxy,
 				OutlierLogPath: proxyArgs.OutlierLogPath,
 			}
+
+			// if proxyArgs.Type == model.SidecarProxy
+			// we know we are running in an application container/workload pod
+			log.Infof("[dev] proxy type %s", proxyArgs.Type)
+			log.Infof("[dev] proxy args %+v", proxyArgs)
+
 			agentOptions := options.NewAgentOptions(&proxyArgs, proxyConfig, sds)
 			agent := istioagent.NewAgent(proxyConfig, agentOptions, secOpts, envoyOptions)
 			ctx, cancel := context.WithCancel(context.Background())
@@ -161,6 +172,7 @@ func newProxyCommand(sds istioagent.SDSServiceFactory) *cobra.Command {
 			go cmd.WaitSignalFunc(cancel)
 
 			// Start in process SDS, dns server, xds proxy, and Envoy.
+			// this starts envoy
 			wait, err := agent.Run(ctx)
 			if err != nil {
 				return err
@@ -249,7 +261,7 @@ func initProxy(args []string) error {
 	podIP, _ := netip.ParseAddr(options.InstanceIPVar.Get()) // protobuf encoding of IP_ADDRESS type
 	if podIP.IsValid() {
 		// The first one must be the pod ip as we pick the first ip as pod ip in istiod.
-		proxyArgs.IPAddresses = []string{podIP.String()}
+		proxyArgs.IPAddresses = []string{podIP.String()} // found it; pod ip is assigned to IPAddresses in proxyArgs
 	}
 
 	// Obtain all the IPs from the node

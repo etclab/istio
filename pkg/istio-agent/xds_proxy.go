@@ -97,7 +97,7 @@ type XdsProxy struct {
 	proxyAddresses       []string
 	ia                   *Agent
 
-	httpTapServer      *http.Server
+	httpTapServer      *http.Server // record all http traffic
 	tapMutex           sync.RWMutex
 	tapResponseChannel chan *discovery.DiscoveryResponse
 

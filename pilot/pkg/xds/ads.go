@@ -183,6 +183,7 @@ func (s *DiscoveryServer) StreamAggregatedResources(stream DiscoveryStream) erro
 	return s.Stream(stream)
 }
 
+// okay here comes the stream of updates
 func (s *DiscoveryServer) Stream(stream DiscoveryStream) error {
 	if knativeEnv != "" && firstRequest.Load() {
 		// How scaling works in knative is the first request is the "loading" request. During

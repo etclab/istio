@@ -707,6 +707,7 @@ var (
 	}
 )
 
+// what info is sent via a push update?
 // NewPushContext creates a new PushContext structure to track push status.
 func NewPushContext() *PushContext {
 	return &PushContext{
@@ -1695,6 +1696,7 @@ func (ps *PushContext) initServiceAccounts(env *Environment, services []*Service
 	}
 }
 
+// mark what is push context
 // Caches list of authentication policies
 func (ps *PushContext) initAuthnPolicies(env *Environment) {
 	ps.AuthnPolicies = initAuthenticationPolicies(env)
@@ -2179,6 +2181,8 @@ func (ps *PushContext) WasmPluginsByListenerInfo(proxy *Proxy, info WasmPluginLi
 	return matchedPlugins
 }
 
+// TODO: come back to this -- where does the original filters come from
+// how is the http connection manager filter configured?
 // pre computes envoy filters per namespace
 func (ps *PushContext) initEnvoyFilters(env *Environment, changed sets.Set[ConfigKey], previousIndex map[string][]*EnvoyFilterWrapper) {
 	envoyFilterConfigs := env.List(gvk.EnvoyFilter, NamespaceAll)

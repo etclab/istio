@@ -46,7 +46,7 @@ type ProxyConfig struct {
 	OutlierLogPath    string
 
 	BinaryPath    string
-	ConfigPath    string
+	ConfigPath    string // mark var | what is in the config file?
 	ConfigCleanup bool
 	AdminPort     int32
 	DrainDuration *durationpb.Duration

@@ -1247,9 +1247,10 @@ func (s *Server) shouldStartNsController() bool {
 func (s *Server) startKeyCurator() {
 	// init key curator server
 	if s.keyCuratorServer == nil {
-	s.keyCuratorServer = keycurator.NewKeyCuratorServer(constants.MaxUsers)
+		s.keyCuratorServer = keycurator.NewKeyCuratorServer(constants.MaxUsers)
 	}
 
+	// TODO: let's try using secure grpc for key curator
 	s.addStartFunc("key-curator", func(stop <-chan struct{}) error {
 		grpcServer := s.secureGrpcServer
 		if s.secureGrpcServer == nil {

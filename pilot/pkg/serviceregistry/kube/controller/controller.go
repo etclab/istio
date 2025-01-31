@@ -160,6 +160,7 @@ var (
 
 type ambientIndex = ambient.Index
 
+// okay watch for resource updates from k8s
 // Controller is a collection of synchronized resource watchers
 // Caches are thread-safe
 type Controller struct {

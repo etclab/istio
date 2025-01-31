@@ -72,11 +72,17 @@ func (s SaNode) String() string {
 // the subject public key is the public key in the CSR.
 // the validity duration is the ValidityDuration in request, or default value if the given duration is invalid.
 // it is signed by the CA signing key.
+
+// mark: this is the method we're calling from
+// security/pkg/nodeagent/caclient/providers/citadel/client.go:line 110
+// TODO: the key curator server needs this authenticators
 func (s *Server) CreateCertificate(ctx context.Context, request *pb.IstioCertificateRequest) (
 	*pb.IstioCertificateResponse, error,
 ) {
 	s.monitoring.CSR.Increment()
+	// how do authenticators actually work -- okay
 	caller, err := security.Authenticate(ctx, s.Authenticators)
+
 	if caller == nil || err != nil {
 		s.monitoring.AuthnError.Increment()
 		return nil, status.Error(codes.Unauthenticated, "request authenticate failure")
@@ -85,7 +91,8 @@ func (s *Server) CreateCertificate(ctx context.Context, request *pb.IstioCertifi
 	serverCaLog := serverCaLog.WithLabels("client", security.GetConnectionAddress(ctx))
 	// By default, we will use the callers identity for the certificate
 	sans := caller.Identities
-	crMetadata := request.Metadata.GetFields()
+	crMetadata := request.Metadata.GetFields() // cert signer?
+
 	impersonatedIdentity := crMetadata[security.ImpersonatedIdentity].GetStringValue()
 	if impersonatedIdentity != "" {
 		serverCaLog.Debugf("impersonated identity: %s", impersonatedIdentity)
@@ -98,6 +105,7 @@ func (s *Server) CreateCertificate(ctx context.Context, request *pb.IstioCertifi
 			return nil, status.Error(codes.Unauthenticated, "request impersonation authentication failure")
 
 		}
+		// skip impersonated authentication okay
 		if err := s.nodeAuthorizer.authenticateImpersonation(ctx, caller.KubernetesInfo, impersonatedIdentity); err != nil {
 			s.monitoring.AuthnError.Increment()
 			// Return an opaque error (for security purposes) but log the full reason
@@ -108,7 +116,8 @@ func (s *Server) CreateCertificate(ctx context.Context, request *pb.IstioCertifi
 		sans = []string{impersonatedIdentity}
 	}
 	serverCaLog.Debugf("generating a certificate, sans: %v, requested ttl: %s", sans, time.Duration(request.ValidityDuration*int64(time.Second)))
-	certSigner := crMetadata[security.CertSigner].GetStringValue()
+	serverCaLog.Debugf("request %+v", sans, time.Duration(request.ValidityDuration*int64(time.Second)))
+	certSigner := crMetadata[security.CertSigner].GetStringValue() // from grpc metadata
 	_, _, certChainBytes, rootCertBytes := s.ca.GetCAKeyCertBundle().GetAll()
 	certOpts := ca.CertOpts{
 		SubjectIDs: sans,
@@ -122,7 +131,7 @@ func (s *Server) CreateCertificate(ctx context.Context, request *pb.IstioCertifi
 	if certSigner == "" {
 		cert, signErr = s.ca.Sign([]byte(request.Csr), certOpts)
 	} else {
-		serverCaLog.Debugf("signing CSR with cert chain")
+		serverCaLog.Debugf("signing CSR with cert chain") // okay return the entire chain
 		respCertChain, signErr = s.ca.SignWithCertChain([]byte(request.Csr), certOpts)
 	}
 	if signErr != nil {
@@ -137,7 +146,7 @@ func (s *Server) CreateCertificate(ctx context.Context, request *pb.IstioCertifi
 			serverCaLog.Debugf("Append cert chain to response, %s", string(certChainBytes))
 		}
 	}
-	if len(rootCertBytes) != 0 {
+	if len(rootCertBytes) != 0 { // add root cert at the end
 		respCertChain = append(respCertChain, string(rootCertBytes))
 	}
 	response := &pb.IstioCertificateResponse{
@@ -145,6 +154,7 @@ func (s *Server) CreateCertificate(ctx context.Context, request *pb.IstioCertifi
 	}
 	s.monitoring.Success.Increment()
 	serverCaLog.Debugf("CSR successfully signed, sans %v.", caller.Identities)
+	serverCaLog.Debugf("response cert chain %v", respCertChain)
 	return response, nil
 }
 

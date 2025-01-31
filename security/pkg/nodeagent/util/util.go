@@ -44,6 +44,8 @@ func ParseCertAndGetExpiryTimestamp(certByte []byte) (time.Time, error) {
 	return cert.NotAfter, nil
 }
 
+// mark
+// private key, cert chain = chain from root to this cert, root cert = trusted root cert
 // OutputKeyCertToDir output the key and certificate to the given directory.
 // If directory string is empty, return nil.
 func OutputKeyCertToDir(dir string, privateKey, certChain, rootCert []byte) error {

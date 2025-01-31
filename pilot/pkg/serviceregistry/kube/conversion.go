@@ -179,6 +179,7 @@ func kubeToIstioServiceAccount(saname string, ns string, mesh *meshconfig.MeshCo
 	return spiffe.MustGenSpiffeURI(mesh, ns, saname)
 }
 
+// mark
 // SecureNamingSAN creates the secure naming used for SAN verification from pod metadata
 func SecureNamingSAN(pod *corev1.Pod, mesh *meshconfig.MeshConfig) string {
 	return spiffe.MustGenSpiffeURI(mesh, pod.Namespace, pod.Spec.ServiceAccountName)

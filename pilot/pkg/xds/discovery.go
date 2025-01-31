@@ -132,6 +132,7 @@ type DiscoveryServer struct {
 	DiscoveryStartTime time.Time
 }
 
+// what are internal mesh data structures?
 // NewDiscoveryServer creates DiscoveryServer that sources data from Pilot's internal mesh data structures
 func NewDiscoveryServer(env *model.Environment, clusterAliases map[string]string) *DiscoveryServer {
 	out := &DiscoveryServer{
@@ -308,9 +309,10 @@ func (s *DiscoveryServer) ConfigUpdate(req *model.PushRequest) {
 	s.pushChannel <- req
 }
 
+// okay who's sending the updates?
 // Debouncing and push request happens in a separate thread, it uses locks
 // and we want to avoid complications, ConfigUpdate may already hold other locks.
-// handleUpdates processes events from pushChannel
+// handleUpdates processes events from pushChannel -- okay
 // It ensures that at minimum minQuiet time has elapsed since the last event before processing it.
 // It also ensures that at most maxDelay is elapsed between receiving an event and processing it.
 func (s *DiscoveryServer) handleUpdates(stopCh <-chan struct{}) {
@@ -351,6 +353,7 @@ func debounce(ch chan *model.PushRequest, stopCh <-chan struct{}, opts DebounceO
 						pushCounter, debouncedEvents, reasonsUpdated(req),
 						quietTime, eventDelay, req.Full)
 				} else {
+					//  here -- coonfig was updated
 					log.Infof("Push debounce stable[%d] %d for config %s: %v since last change, %v since last push, full=%v",
 						pushCounter, debouncedEvents, configsUpdated(req),
 						quietTime, eventDelay, req.Full)
