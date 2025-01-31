@@ -39,11 +39,13 @@ func (s *DiscoveryServer) SvcUpdate(shard model.ShardKey, hostname string, names
 	}
 }
 
+// mark: called when endpoint is first discovered?
 // EDSUpdate computes destination address membership across all clusters and networks.
 // This is the main method implementing EDS.
 // It replaces InstancesByPort in model - instead of iterating over all endpoints it uses
 // the hostname-keyed map. And it avoids the conversion from Endpoint to ServiceEntry to envoy
 // on each step: instead the conversion happens once, when an endpoint is first discovered.
+// this gets called from everywhere
 func (s *DiscoveryServer) EDSUpdate(shard model.ShardKey, serviceName string, namespace string,
 	istioEndpoints []*model.IstioEndpoint,
 ) {
@@ -52,6 +54,7 @@ func (s *DiscoveryServer) EDSUpdate(shard model.ShardKey, serviceName string, na
 	pushType := s.Env.EndpointIndex.UpdateServiceEndpoints(shard, serviceName, namespace, istioEndpoints)
 	if pushType == model.IncrementalPush || pushType == model.FullPush {
 		// Trigger a push
+		// where does this push to?
 		s.ConfigUpdate(&model.PushRequest{
 			Full:           pushType == model.FullPush,
 			ConfigsUpdated: sets.New(model.ConfigKey{Kind: kind.ServiceEntry, Name: serviceName, Namespace: namespace}),

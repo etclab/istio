@@ -191,8 +191,8 @@ func (cb *ClusterBuilder) buildUpstreamClusterTLSContext(opts *buildClusterOpts,
 			tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs = append(tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs,
 				sec_model.ConstructSdsSecretConfig("rbeIdentity"))
 		} else {
-		tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs = append(tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs,
-			sec_model.ConstructSdsSecretConfig(sec_model.SDSDefaultResourceName))
+			tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs = append(tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs,
+				sec_model.ConstructSdsSecretConfig(sec_model.SDSDefaultResourceName))
 		}
 
 		// log.Infof("[dev] buildUpstreamClusterTLSContext: clusterBuilder")

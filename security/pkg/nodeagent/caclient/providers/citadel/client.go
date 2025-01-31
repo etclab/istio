@@ -76,12 +76,14 @@ func (c *CitadelClient) Close() {
 	}
 }
 
+// mark
 // CSRSign calls Citadel to sign a CSR.
 func (c *CitadelClient) CSRSign(csrPEM []byte, certValidTTLInSec int64) (res []string, err error) {
 	crMetaStruct := &structpb.Struct{
 		Fields: map[string]*structpb.Value{
+			// what is this metadata about?
 			security.CertSigner: {
-				Kind: &structpb.Value_StringValue{StringValue: c.opts.CertSigner},
+				Kind: &structpb.Value_StringValue{StringValue: c.opts.CertSigner}, // who is this cert signer?
 			},
 		},
 	}
@@ -114,6 +116,8 @@ func (c *CitadelClient) CSRSign(csrPEM []byte, certValidTTLInSec int64) (res []s
 		return nil, errors.New("invalid empty CertChain")
 	}
 
+	citadelClientLog.Infof("log create certificate response: %v", resp.CertChain)
+
 	return resp.CertChain, nil
 }
 
@@ -131,6 +135,7 @@ func (c *CitadelClient) getTLSOptions() *istiogrpc.TLSOptions {
 }
 
 func (c *CitadelClient) buildConnection() (*grpc.ClientConn, error) {
+	// handle configs for the grpc server --
 	tlsOpts := c.getTLSOptions()
 	opts, err := istiogrpc.ClientOptions(nil, tlsOpts)
 	if err != nil {

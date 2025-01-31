@@ -64,9 +64,10 @@ const (
 	LogUDSSocketName      = "log.sock"
 	CNIPluginKubeconfName = "istio-cni-kubeconfig"
 	// K8s liveness and readiness endpoints
-	LivenessEndpoint   = "/healthz"
-	ReadinessEndpoint  = "/readyz"
-	ReadinessPort      = "8000"
+	LivenessEndpoint  = "/healthz"
+	ReadinessEndpoint = "/readyz"
+	ReadinessPort     = "8000"
+	// mark
 	ServiceAccountPath = "/var/run/secrets/kubernetes.io/serviceaccount"
 )
 

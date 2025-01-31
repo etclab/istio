@@ -431,6 +431,7 @@ func getInjectionStatus(podSpec corev1.PodSpec, revision string) string {
 	return string(statusAnnotationValue)
 }
 
+// okay:
 // injectPod is the core of the injection logic. This takes a pod and injection
 // template, as well as some inputs to the injection template, and produces a
 // JSON patch.
@@ -481,6 +482,7 @@ func injectPod(req InjectionParameters) ([]byte, error) {
 		return nil, fmt.Errorf("failed to create patch: %v", err)
 	}
 
+	// okay after inject
 	log.Debugf("AdmissionResponse: patch=%v\n", string(patch))
 	return patch, nil
 }
@@ -1093,6 +1095,7 @@ func applyOverlay(target *corev1.Pod, overlayJSON []byte) (*corev1.Pod, error) {
 	return &pod, nil
 }
 
+// from logs
 func (wh *Webhook) inject(ar *kube.AdmissionReview, path string) *kube.AdmissionResponse {
 	log := log.WithLabels("path", path)
 	req := ar.Request
@@ -1210,6 +1213,8 @@ func isSidecarUserMatchingAppUser(containers []corev1.Container) bool {
 	return sideCarUser == appUser
 }
 
+// from log
+// sidecar injection request handling is here
 func (wh *Webhook) serveInject(w http.ResponseWriter, r *http.Request) {
 	log := log.WithLabels("path", r.URL.Path)
 	totalInjections.Increment()
@@ -1256,7 +1261,7 @@ func (wh *Webhook) serveInject(w http.ResponseWriter, r *http.Request) {
 			handleError(log, fmt.Sprintf("Could not decode object: %v", err))
 			reviewResponse = toAdmissionResponse(err)
 		} else {
-			reviewResponse = wh.inject(ar, path)
+			reviewResponse = wh.inject(ar, path) // go here
 		}
 	}
 

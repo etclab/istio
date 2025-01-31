@@ -256,6 +256,7 @@ func Stream(ctx ConnectionContext) error {
 		select {
 		case req, ok := <-con.reqChan:
 			if ok {
+				// mark function
 				if err := ctx.Process(req); err != nil {
 					return err
 				}

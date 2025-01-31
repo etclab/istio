@@ -96,6 +96,7 @@ func transportSocketConverter(tls *networkingAPI.ClientTLSSettings, sniName stri
 	}
 }
 
+// mark
 // TODO(ramaraochavali): Unify this code with cluster upstream TLS settings logic.
 func tlsContextConvert(tls *networkingAPI.ClientTLSSettings, sniName string, metadata *model.BootstrapNodeMetadata) *auth.UpstreamTlsContext {
 	tlsContext := &auth.UpstreamTlsContext{
@@ -123,6 +124,7 @@ func tlsContextConvert(tls *networkingAPI.ClientTLSSettings, sniName string, met
 			CaCertificatePath: model.GetOrDefault(metadata.TLSClientRootCert, tls.CaCertificates),
 		}
 		if len(res.GetResourceName()) > 0 {
+			// mark
 			tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs = append(tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs,
 				model.ConstructSdsSecretConfig(res.GetResourceName()))
 		}

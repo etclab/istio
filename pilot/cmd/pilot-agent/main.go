@@ -32,6 +32,7 @@ import (
 func main() {
 	log.EnableKlogWithCobra()
 	rootCmd := app.NewRootCommand(
+		// todo: who creates the workloadSecretCache? where does it come from?
 		func(options *security.Options, workloadSecretCache security.SecretManager, pkpConf *meshconfig.PrivateKeyProvider) istioagent.SDSService {
 			return sds.NewServer(options, workloadSecretCache, pkpConf)
 		})
