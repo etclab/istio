@@ -602,6 +602,8 @@ func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(rbeId *security.RbeId,
 		IsServer:     true,
 
 		Extensions: extensions,
+
+		TTL: time.Duration(12) * time.Hour,
 	}
 
 	pemCert, pemKey, err := pkiutil.GenCertKeyFromOptions(options)

@@ -241,9 +241,15 @@ func ApplyToCommonTLSContext(tlsContext *tls.CommonTlsContext, proxy *model.Prox
 	log.Infof("[dev] setting default and rbeIdentity for proxy: \n metadata: %v", proxy.Metadata)
 
 	if proxy.Type == model.SidecarProxy {
+		log.Infof("[dev] setting default and rbeIdentity for proxy with labels: %v", proxy.Labels)
+
 		tlsContext.TlsCertificateSdsSecretConfigs = append(tlsContext.TlsCertificateSdsSecretConfigs,
 			ConstructSdsSecretConfig("rbeIdentity"),
 		)
+		// TODO: setting multiple certificates here leads to `rbeIdentiy` being overridden
+		// tlsContext.TlsCertificateSdsSecretConfigs = []*tls.SdsSecretConfig{
+		// 	ConstructSdsSecretConfig(model.GetOrDefault(res.GetResourceName(), SDSDefaultResourceName)),``
+		// }
 	} else {
 		tlsContext.TlsCertificateSdsSecretConfigs = []*tls.SdsSecretConfig{
 			ConstructSdsSecretConfig(model.GetOrDefault(res.GetResourceName(), SDSDefaultResourceName)),

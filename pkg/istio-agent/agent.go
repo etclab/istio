@@ -484,8 +484,9 @@ func (a *Agent) getRbeUserId() (*security.RbeId, error) {
 	log.Infof("[dev] where is the port for ingress gateways: %+v", node.Metadata)
 	// ingress gateway doesn't have the pod ports set
 	port := 443 // default port
+	log.Infof("[dev] pod ports: %+v", node.Metadata.PodPorts)
 	if len(node.Metadata.PodPorts) > 0 {
-	podPort := node.Metadata.PodPorts[0]
+		podPort := node.Metadata.PodPorts[0]
 		port = podPort.ContainerPort
 	}
 
@@ -549,22 +550,22 @@ func (a *Agent) initSdsServer() error {
 
 	// why was this allowed only in the sidecar proxy?
 	if a.cfg.ProxyType == model.SidecarProxy {
-	go func() {
-		// TODO: enable this to renew certificates before they expire
-		// TODO: how would you handle unregistering ids from key curator?
-		// TODO: think about storing all these information in a filename
-		// TODO: so that it can be readily accessed/picked up
-		a.secretCache.RegisterRbeSecretHandler(func(resourceName string) {
+		go func() {
+			// TODO: enable this to renew certificates before they expire
+			// TODO: how would you handle unregistering ids from key curator?
+			// TODO: think about storing all these information in a filename
+			// TODO: so that it can be readily accessed/picked up
+			a.secretCache.RegisterRbeSecretHandler(func(resourceName string) {
 				_, _ = a.getWorkloadRbeCerts(a.secretCache, true)
-		})
+			})
 			// register id for the first time
 			_, _ = a.getWorkloadRbeCerts(a.secretCache, false)
 
-		a.secretCache.RegisterRbeUpdateHandler(func(resourceName string) {
+			a.secretCache.RegisterRbeUpdateHandler(func(resourceName string) {
+				a.secretCache.UpdateUserOpenings()
+			})
 			a.secretCache.UpdateUserOpenings()
-		})
-		a.secretCache.UpdateUserOpenings()
-	}()
+		}()
 	}
 
 	return nil

@@ -158,22 +158,22 @@ func (s *sdsservice) generate(resourceNames []string) (*discovery.DiscoveryRespo
 				Resource: res,
 			})
 		} else {
-		secret, err := s.st.GenerateSecret(resourceName)
-		if err != nil {
-			// Typically, in Istiod, we do not return an error for a failure to generate a resource
-			// However, here it makes sense, because we are generally streaming a single resource,
-			// so sending an error will not cause a single failure to prevent the entire multiplex stream
-			// of resources, and failures here are generally due to temporary networking issues to the CA
-			// rather than a result of configuration issues, which trigger updates in Istiod when resolved.
-			// Instead, we rely on the client to retry (with backoff) on failures.
-			return nil, fmt.Errorf("failed to generate secret for %v: %v", resourceName, err)
-		}
+			secret, err := s.st.GenerateSecret(resourceName)
+			if err != nil {
+				// Typically, in Istiod, we do not return an error for a failure to generate a resource
+				// However, here it makes sense, because we are generally streaming a single resource,
+				// so sending an error will not cause a single failure to prevent the entire multiplex stream
+				// of resources, and failures here are generally due to temporary networking issues to the CA
+				// rather than a result of configuration issues, which trigger updates in Istiod when resolved.
+				// Instead, we rely on the client to retry (with backoff) on failures.
+				return nil, fmt.Errorf("failed to generate secret for %v: %v", resourceName, err)
+			}
 
-		res := protoconv.MessageToAny(toEnvoySecret(secret, s.rootCaPath, s.pkpConf))
-		resources = append(resources, &discovery.Resource{
-			Name:     resourceName,
-			Resource: res,
-		})
+			res := protoconv.MessageToAny(toEnvoySecret(secret, s.rootCaPath, s.pkpConf))
+			resources = append(resources, &discovery.Resource{
+				Name:     resourceName,
+				Resource: res,
+			})
 		}
 	}
 	return &discovery.DiscoveryResponse{
