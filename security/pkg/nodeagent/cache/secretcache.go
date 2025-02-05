@@ -29,6 +29,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/etclab/rbe"
 	"github.com/fsnotify/fsnotify"
@@ -451,6 +452,17 @@ func (sc *SecretManagerClient) UpdateUserOpenings() {
 			for _, g := range row {
 				totalSizeFAU += len(g.Bytes())
 			}
+		}
+
+		for _, rbeId := range allRbeIds {
+			if rbeId == nil {
+				continue
+			}
+
+			totalSizeFAU += len([]byte(rbeId.Ip))
+			totalSizeFAU += int(unsafe.Sizeof(rbeId.Port))
+			totalSizeFAU += int(unsafe.Sizeof(rbeId.ExpireTime))
+			totalSizeFAU += len([]byte(rbeId.Token))
 		}
 
 		keyUpdateSizeAll.With(RequestType.Value(monitoring.MAZU)).Record(float64(totalSizeFAU))
