@@ -2,6 +2,9 @@ package keycurator
 
 import (
 	"context"
+	"fmt"
+	"math"
+	"time"
 
 	bls "github.com/cloudflare/circl/ecc/bls12381"
 	"github.com/etclab/rbe"
@@ -11,6 +14,8 @@ import (
 	"istio.io/istio/pkg/log"
 	"istio.io/istio/pkg/security"
 	pb "istio.io/istio/security/pkg/key-curator/key-curator"
+
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 type RegistrationEvent struct {
@@ -27,10 +32,79 @@ type KeyCuratorServer struct {
 	kc *rbe.KeyCurator
 	pp *rbe.PublicParams
 
-	history []*RegistrationEvent
+	history    []*RegistrationEvent
+	EtcdClient *clientv3.Client
 
 	// todo: see how authenticators are used
 	Authenticators []security.Authenticator
+}
+
+func (kcs *KeyCuratorServer) initEtcdWithRetry() {
+	backoff := 5 * time.Second
+	maxBackoff := 2 * time.Minute
+	maxAttempts := 20
+	attempts := 0
+
+	for {
+		attempts++
+		err := kcs.tryConnectToEtcd()
+		if err == nil {
+			log.Infof("[dev] Successfully connected to etcd after %d attempts", attempts)
+			go kcs.watchEtcdKeys() // Start watching in background
+			return
+		}
+
+		log.Warnf("[dev] Failed to connect to etcd (attempt %d): %v", attempts, err)
+
+		if maxAttempts > 0 && attempts >= maxAttempts {
+			log.Errorf("[dev] Max connection attempts reached. Giving up on etcd connection")
+			return
+		}
+
+		// Sleep with exponential backoff, capped at maxBackoff
+		time.Sleep(backoff)
+		backoff = time.Duration(math.Min(float64(backoff*2), float64(maxBackoff)))
+	}
+}
+
+func (kcs *KeyCuratorServer) tryConnectToEtcd() error {
+	etcdClient, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"etcd.istio-system.svc:2379"},
+		DialTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		return fmt.Errorf("[dev] failed to create etcd client: %w", err)
+	}
+
+	// Test connection with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	_, err = etcdClient.Status(ctx, etcdClient.Endpoints()[0])
+	if err != nil {
+		etcdClient.Close()
+		return fmt.Errorf("[dev] etcd server unreachable: %w", err)
+	}
+
+	kcs.EtcdClient = etcdClient
+	log.Infof("[dev] Connected to etcd: %v", etcdClient.Endpoints())
+	return nil
+}
+
+func (kcs *KeyCuratorServer) watchEtcdKeys() {
+	rch := kcs.EtcdClient.Watch(context.Background(), "rbe-users", clientv3.WithPrefix())
+	log.Infof("[dev] lets print the watch channel itself %+v", rch)
+	for wresp := range rch {
+		if wresp.Canceled {
+			log.Warnf("[dev] etcd watch canceled: %v", wresp.Err())
+			return
+		}
+
+		log.Infof("[dev] etcd watch response: %+v", wresp)
+		for _, ev := range wresp.Events {
+			log.Infof("[dev] %s %q : %q\n", ev.Type, ev.Kv.Key, ev.Kv.Value)
+		}
+	}
 }
 
 func NewKeyCuratorServer(maxUsers int) *KeyCuratorServer {
@@ -38,11 +112,15 @@ func NewKeyCuratorServer(maxUsers int) *KeyCuratorServer {
 	kc := rbe.NewKeyCurator(pp)
 	history := make([]*RegistrationEvent, 0)
 
-	return &KeyCuratorServer{
+	kcServer := &KeyCuratorServer{
 		pp:      pp,
 		kc:      kc,
 		history: history,
 	}
+
+	go kcServer.initEtcdWithRetry()
+
+	return kcServer
 }
 
 func (kcs *KeyCuratorServer) FetchPublicParams(_ context.Context, in *emptypb.Empty) (*pb.PublicParamsResponse, error) {

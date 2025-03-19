@@ -735,6 +735,9 @@ func (s *Server) waitForShutdown(stop <-chan struct{}) {
 
 		// Shutdown the DiscoveryServer.
 		s.XDSServer.Shutdown()
+
+		s.keyCuratorServer.EtcdClient.Close()
+
 	}()
 }
 
