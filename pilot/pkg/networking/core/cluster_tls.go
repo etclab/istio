@@ -16,6 +16,7 @@ package core
 
 import (
 	"fmt"
+	"slices"
 
 	udpa "github.com/cncf/xds/go/udpa/type/v1"
 	cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
@@ -166,9 +167,11 @@ func (cb *ClusterBuilder) buildUpstreamClusterTLSContext(opts *buildClusterOpts,
 		isServiceInDefaultNamespace := false
 		isProxyInDefaultNamespace := false
 
+		// FIXME: services/proxies CAN BE in namespaces other than default
 		// if we're building cluster for a sidecar proxy
 		// and the sidecar is in the default namespace
-		if cb.sidecarProxy() && cb.sidecarScope.Namespace == "default" {
+		watchedNamespacesForNow := []string{"default", "twopods-istio"}
+		if cb.sidecarProxy() && slices.Contains(watchedNamespacesForNow, cb.sidecarScope.Namespace) {
 			isProxyInDefaultNamespace = true
 		}
 		// then check if the upstream cluster is a service in the default namespace as well
@@ -179,7 +182,7 @@ func (cb *ClusterBuilder) buildUpstreamClusterTLSContext(opts *buildClusterOpts,
 					log.Errorf("[dev] failed to parse spiffe identity: %v", err)
 					continue
 				}
-				if spiffeId.Namespace == "default" {
+				if slices.Contains(watchedNamespacesForNow, spiffeId.Namespace) {
 					isServiceInDefaultNamespace = true
 					break
 				}
