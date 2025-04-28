@@ -483,7 +483,7 @@ func (sc *SecretManagerClient) UpdateUserOpenings() {
 			if rbeId == nil {
 				continue
 			}
-			key := fmt.Sprintf("%s|%d|%s", rbeId.Ip, rbeId.Port, rbeId.Token)
+			key := fmt.Sprintf("%s|%s", rbeId.Ip, rbeId.Token)
 			podsValidity[key] = kcUtil.CheckPodValidity(rbeId, rbeSecret)
 		}
 

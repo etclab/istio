@@ -332,7 +332,7 @@ type RbeId struct {
 
 // FIXME: this doesn't need to be truncated to 16-bit number
 func (id *RbeId) SecretKey() int32 {
-	return idStringToNumber(fmt.Sprintf("%s|%d|%s", id.Ip, id.Port, id.Token))
+	return idStringToNumber(fmt.Sprintf("%s|%s", id.Ip, id.Token))
 }
 
 func (id *RbeId) String() string {
