@@ -3,8 +3,8 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 kubectl delete secret tpm-keys -n istio-system
 
 kubectl create secret generic tpm-keys \
-  --from-file=privateKey=${SCRIPT_DIR}/tpm-test-keys/sk.key \
-  --from-file=publicKey=${SCRIPT_DIR}/tpm-test-keys/pk.key \
+  --from-file=privateKey=${SCRIPT_DIR}/test-keys/sk.key \
+  --from-file=publicKey=${SCRIPT_DIR}/test-keys/pk.key \
   -n istio-system
 
 kubectl -n istio-system patch deployment istiod --type='strategic' -p='

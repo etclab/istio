@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# TODO: setup tpm device on all nodes before running this script
+# ./setup-tpm-all-nodes.sh -d wisc.cloudlab.us c220g1-030802 c220g1-030810 c220g1-030815 c220g1-030808
+
 DOCKER_USER=atosh502
 export HUB="docker.io/$DOCKER_USER"
 export TAG=$DOCKER_USER
@@ -11,7 +14,8 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 cd $SCRIPT_DIR/../
 
 ./dev/install-etcd.sh
-./dev/deploy-tpm-secret.sh
-# ./setup-tpm-all-nodes.sh -d wisc.cloudlab.us c220g1-030802 c220g1-030810 c220g1-030815 c220g1-030808
+./dev/tpm/deploy-tpm-secret.sh
+./dev/tpm/install-k8s-tpm-device.sh
+./dev/tpm/patch-istiod-tpm-device.sh
 
 go run ./istioctl/cmd/istioctl install --set hub=$HUB --set tag=$TAG --set "values.global.imagePullPolicy=Always" -y
