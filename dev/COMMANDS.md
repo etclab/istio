@@ -33,6 +33,7 @@
 	- `sidecar.istio.io/logLevel: "debug"`
 - rollout a kubernetes deployment
 	- `kubectl rollout restart deployment ratings-v1`
+- use `export GOTOOLCHAIN=auto` in case you have conflicting go versions among build/deploy tools
 
 
 ## Making code changes
