@@ -32,6 +32,8 @@ message RegisterRequest {
 message UserOpeningResponse {
     repeated rbe.proto.G1 commitments = 1; 
     repeated rbe.proto.G1 opening = 2; 
+    CounterAttestation counterAttestation = 3;
+    // TODO: add membership proof here
 }
 
 message UpdateRequest {
@@ -55,4 +57,15 @@ message RegistrationEvent {
     int32 id = 4;
     rbe.proto.G1 publicKey = 5;
     repeated rbe.proto.G1 xi = 6;
+}
+
+message CounterAttestation {
+    uint64 counter = 1;
+    bytes msgHash = 2;
+    ECDSASignature signature = 3;
+}
+
+message ECDSASignature {
+    bytes r = 1;
+    bytes s = 2;
 }

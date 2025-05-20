@@ -5,10 +5,12 @@ package kcclient
 import (
 	"context"
 	"fmt"
+	"math/big"
 	"strconv"
 
 	bls "github.com/cloudflare/circl/ecc/bls12381"
 	"github.com/etclab/rbe"
+	"github.com/etclab/trinc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
@@ -172,12 +174,16 @@ func (c *KCClient) FetchUpdate(id int32) ([]*bls.G1, []*bls.G1, error) {
 		return nil, nil, err
 	}
 
-	commitments, opening := getCommitmentsOpenings(updResp)
+	commitments, opening, ctrAttestation := getCommitmentsOpenings(updResp)
+	// TODO: do something with the counter attestation
+	log.Infof("[dev] do something with counter attestation (after FetchUpdate): %v", ctrAttestation)
 
 	return commitments, opening, nil
 }
 
-func getCommitmentsOpenings(uoResp *pb.UserOpeningResponse) ([]*bls.G1, []*bls.G1) {
+// TODO: fix name for this function
+func getCommitmentsOpenings(uoResp *pb.UserOpeningResponse) ([]*bls.G1,
+	[]*bls.G1, *trinc.CounterAttestation) {
 
 	commitments := []*bls.G1{}
 	for _, v := range uoResp.GetCommitments() {
@@ -193,7 +199,18 @@ func getCommitmentsOpenings(uoResp *pb.UserOpeningResponse) ([]*bls.G1, []*bls.G
 		opening = append(opening, g1)
 	}
 
-	return commitments, opening
+	attestation := &trinc.CounterAttestation{}
+	attestationPb := uoResp.GetCounterAttestation()
+	if attestationPb != nil {
+		attestation.Counter = attestationPb.GetCounter()
+		attestation.MsgHash = attestationPb.GetMsgHash()
+		attestation.Signature = &trinc.ECDSASignature{
+			R: new(big.Int).SetBytes(attestationPb.GetSignature().GetR()),
+			S: new(big.Int).SetBytes(attestationPb.GetSignature().GetS()),
+		}
+	}
+
+	return commitments, opening, attestation
 }
 
 // func (c *KCClient) RegisterUser(user *rbe.User, id int32) ([]*bls.G1, []*bls.G1, error) {
@@ -226,7 +243,9 @@ func (c *KCClient) RegisterUser(user *rbe.User, rbeId *security.RbeId) ([]*bls.G
 		log.Errorf("[dev] err on RegisterUser(): %v", err)
 		return nil, nil, err
 	}
-	commitments, opening := getCommitmentsOpenings(regR)
+	commitments, opening, ctrAttestation := getCommitmentsOpenings(regR)
+	// TODO: do something with the counter attestation
+	log.Infof("[dev] do something with the counter attestation (after RegisterUser): %v", ctrAttestation)
 
 	return commitments, opening, nil
 }

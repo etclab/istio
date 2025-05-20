@@ -11,11 +11,13 @@ import (
 	bls "github.com/cloudflare/circl/ecc/bls12381"
 	"github.com/etclab/rbe"
 	"github.com/etclab/rbe/proto"
+	"github.com/etclab/trinc"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"istio.io/istio/pkg/log"
 	"istio.io/istio/pkg/security"
 	pb "istio.io/istio/security/pkg/key-curator/key-curator"
+	trincutil "istio.io/istio/security/pkg/trinc/util"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 	gproto "google.golang.org/protobuf/proto"
@@ -33,6 +35,9 @@ type RegistrationEvent struct {
 	xi        []*bls.G1
 
 	source string // either api or etcd
+
+	counterAttestation *trinc.CounterAttestation
+	// TODO: also needs to store the membership proof
 }
 
 // TODO: rename this to something more meaningful
@@ -51,7 +56,8 @@ type KeyCuratorServer struct {
 
 	history       []*RegistrationEvent
 	EtcdClient    *clientv3.Client
-	registeredIds map[int]bool // used to track registered user ids
+	registeredIds map[int]bool                      // used to track registered user ids
+	attestations  map[int]*trinc.CounterAttestation // track attestations for each id
 
 	registrationQueue chan UserRequest
 
@@ -322,12 +328,14 @@ func NewKeyCuratorServer(maxUsers int) *KeyCuratorServer {
 	kc := rbe.NewKeyCurator(pp)
 	history := make([]*RegistrationEvent, 0)
 	registeredIds := make(map[int]bool)
+	attestations := make(map[int]*trinc.CounterAttestation)
 
 	kcServer := &KeyCuratorServer{
 		pp:            pp,
 		kc:            kc,
 		history:       history,
 		registeredIds: registeredIds,
+		attestations:  attestations,
 
 		registrationQueue: make(chan UserRequest, 100),
 	}
@@ -343,9 +351,11 @@ func (kcs *KeyCuratorServer) FetchPublicParams(_ context.Context, in *emptypb.Em
 
 // how does history change when multiple istiod instances are running?
 func (kcs *KeyCuratorServer) addToHistory(token string, ip string, port string,
-	id int, publicKey *bls.G1, xi []*bls.G1, source string) {
+	id int, publicKey *bls.G1, xi []*bls.G1, source string,
+	counterAttestation *trinc.CounterAttestation) {
 	kcs.history = append(kcs.history,
-		&RegistrationEvent{token, ip, port, id, publicKey, xi, source})
+		&RegistrationEvent{token, ip, port, id, publicKey, xi, source,
+			counterAttestation})
 }
 
 // fetches updates for all users
@@ -408,7 +418,22 @@ func (kcs *KeyCuratorServer) FetchUpdate(_ context.Context, in *pb.UpdateRequest
 		commitments = append(commitments, &proto.G1{Point: v.Bytes()})
 	}
 
-	return &pb.UserOpeningResponse{Opening: opening, Commitments: commitments}, nil
+	attestationProto := counterAttestationToProto(kcs.attestations[id])
+
+	return &pb.UserOpeningResponse{Opening: opening, Commitments: commitments,
+		CounterAttestation: attestationProto}, nil
+}
+
+func counterAttestationToProto(counterAttestation *trinc.CounterAttestation) *pb.CounterAttestation {
+	attestationProto := &pb.CounterAttestation{
+		Counter: counterAttestation.Counter,
+		MsgHash: counterAttestation.MsgHash,
+		Signature: &pb.ECDSASignature{
+			R: counterAttestation.Signature.R.Bytes(),
+			S: counterAttestation.Signature.S.Bytes(),
+		},
+	}
+	return attestationProto
 }
 
 func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
@@ -427,8 +452,21 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 		}
 	}
 
+	regMsg, err := gproto.Marshal(in)
+	if err != nil {
+		log.Errorf("[dev] error marshalling register request: %v", err)
+	}
+	counterAttestation, err := trincutil.DoAttestCounter(regMsg)
+	if err != nil {
+		log.Errorf("[dev] error generating counter attestation: %v", err)
+	}
+	kcs.attestations[id] = counterAttestation
+	log.Infof("[dev] counter attestation: %v", counterAttestation)
+
 	kcs.kc.RegisterUser(id, publicKey, xi)
-	kcs.addToHistory(in.Token, in.Ip, in.Port, int(in.Id), publicKey, xi, source)
+	// TODO: also add the membership proof
+	kcs.addToHistory(in.Token, in.Ip, in.Port, int(in.Id), publicKey, xi,
+		source, counterAttestation)
 
 	opening := []*proto.G1{}
 	for _, v := range kcs.kc.UserOpenings[id] {
@@ -440,6 +478,8 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 		commitments = append(commitments, &proto.G1{Point: v.Bytes()})
 	}
 
+	attestationProto := counterAttestationToProto(counterAttestation)
+
 	kcs.registeredIds[id] = true
 	if source == "api" {
 		// only send to etcd if registering a new user via API
@@ -448,7 +488,9 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 		kcs.StoreAtEtcd(id, in)
 	}
 
-	return &pb.UserOpeningResponse{Opening: opening, Commitments: commitments}, nil
+	// TODO: send the counter attestation as well as the membership proof
+	return &pb.UserOpeningResponse{Opening: opening, Commitments: commitments,
+		CounterAttestation: attestationProto}, nil
 }
 
 func (kcs *KeyCuratorServer) RegisterUser(_ context.Context, in *pb.RegisterRequest) (*pb.UserOpeningResponse, error) {

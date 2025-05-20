@@ -83,7 +83,6 @@ import (
 	caserver "istio.io/istio/security/pkg/server/ca"
 	"istio.io/istio/security/pkg/server/ca/authenticate"
 	"istio.io/istio/security/pkg/server/ca/authenticate/kubeauth"
-	trincutil "istio.io/istio/security/pkg/trinc/util"
 )
 
 const (
@@ -393,9 +392,6 @@ func NewServer(args *PilotArgs, initFuncs ...func(*Server)) (*Server, error) {
 
 	// todo: fix authenticators with caOpts
 	s.startKeyCurator()
-
-	// TODO: here goes the code that'll test access to TPM
-	trincutil.ReadTPMSk()
 
 	// TODO: don't run this if galley is started, one ctlz is enough
 	if args.CtrlZOptions != nil {
