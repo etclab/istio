@@ -19,3 +19,9 @@ cd $SCRIPT_DIR/../
 ./dev/tpm/patch-istiod-tpm-device.sh
 
 go run ./istioctl/cmd/istioctl install --set hub=$HUB --set tag=$TAG --set "values.global.imagePullPolicy=Always" -y
+
+kubectl label namespace default istio-injection=enabled
+kubectl apply -f ./dev/yaml/token-review-role.yaml 
+kubectl apply -f ./dev/yaml/token-review-binding.yaml 
+
+cd -
