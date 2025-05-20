@@ -14,14 +14,16 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 cd $SCRIPT_DIR/../
 
 ./dev/install-etcd.sh
-./dev/tpm/deploy-tpm-secret.sh
 ./dev/tpm/install-k8s-tpm-device.sh
-./dev/tpm/patch-istiod-tpm-device.sh
 
 go run ./istioctl/cmd/istioctl install --set hub=$HUB --set tag=$TAG --set "values.global.imagePullPolicy=Always" -y
 
 kubectl label namespace default istio-injection=enabled
 kubectl apply -f ./dev/yaml/token-review-role.yaml 
 kubectl apply -f ./dev/yaml/token-review-binding.yaml 
+
+
+./dev/tpm/deploy-tpm-secret.sh
+./dev/tpm/patch-istiod-tpm-device.sh
 
 cd -
