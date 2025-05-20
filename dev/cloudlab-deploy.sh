@@ -11,6 +11,9 @@ export GOTOOLCHAIN=auto
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
+kubectl patch deployment nfs-subdir-external-provisioner \
+    -p '{"spec":{"template":{"metadata":{"annotations":{"sidecar.istio.io/inject":"false"}}}}}'
+
 cd $SCRIPT_DIR/../
 
 ./dev/install-etcd.sh
