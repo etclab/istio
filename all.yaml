@@ -65,6 +65,9 @@ spec:
       version: v1
   template:
     metadata:
+      annotations:
+        sidecar.istio.io/userVolume: '[{"name":"tpm-pubkey-volume","configMap":{"name":"tpm-pubkey"}}]'
+        sidecar.istio.io/userVolumeMount: '[{"name":"tpm-pubkey-volume","mountPath":"/etc/tpm-keys","readOnly":true}]'
       labels:
         app: details
         version: v1
@@ -121,6 +124,8 @@ spec:
         version: v1
       annotations:
         sidecar.istio.io/logLevel: "debug" 
+        sidecar.istio.io/userVolume: '[{"name":"tpm-pubkey-volume","configMap":{"name":"tpm-pubkey"}}]'
+        sidecar.istio.io/userVolumeMount: '[{"name":"tpm-pubkey-volume","mountPath":"/etc/tpm-keys","readOnly":true}]'
     spec:
       serviceAccountName: bookinfo-ratings
       containers:
@@ -169,6 +174,9 @@ spec:
       version: v1
   template:
     metadata:
+      annotations:
+        sidecar.istio.io/userVolume: '[{"name":"tpm-pubkey-volume","configMap":{"name":"tpm-pubkey"}}]'
+        sidecar.istio.io/userVolumeMount: '[{"name":"tpm-pubkey-volume","mountPath":"/etc/tpm-keys","readOnly":true}]'
       labels:
         app: reviews
         version: v1
@@ -314,6 +322,8 @@ spec:
   template:
     metadata:
       annotations:
+        sidecar.istio.io/userVolume: '[{"name":"tpm-pubkey-volume","configMap":{"name":"tpm-pubkey"}}]'
+        sidecar.istio.io/userVolumeMount: '[{"name":"tpm-pubkey-volume","mountPath":"/etc/tpm-keys","readOnly":true}]'
         prometheus.io/scrape: "true"
         prometheus.io/port: "9080"
         prometheus.io/path: "/metrics"

@@ -57,6 +57,8 @@ message RegistrationEvent {
     int32 id = 4;
     rbe.proto.G1 publicKey = 5;
     repeated rbe.proto.G1 xi = 6;
+    RegisterRequest request = 7;
+    CounterAttestation counterAttestation = 8;
 }
 
 message CounterAttestation {

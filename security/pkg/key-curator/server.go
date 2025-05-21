@@ -27,12 +27,15 @@ const RBE_USER_PREFIX = "rbe-user/"
 const RBE_PP_KEY = "rbe-system/pp"
 
 type RegistrationEvent struct {
+	// TODO: remove these fileds as request already has them
 	token     string
 	ip        string
 	port      string
 	id        int
 	publicKey *bls.G1
 	xi        []*bls.G1
+
+	request *pb.RegisterRequest
 
 	source string // either api or etcd
 
@@ -351,10 +354,10 @@ func (kcs *KeyCuratorServer) FetchPublicParams(_ context.Context, in *emptypb.Em
 
 // how does history change when multiple istiod instances are running?
 func (kcs *KeyCuratorServer) addToHistory(token string, ip string, port string,
-	id int, publicKey *bls.G1, xi []*bls.G1, source string,
+	id int, publicKey *bls.G1, xi []*bls.G1, in *pb.RegisterRequest, source string,
 	counterAttestation *trinc.CounterAttestation) {
 	kcs.history = append(kcs.history,
-		&RegistrationEvent{token, ip, port, id, publicKey, xi, source,
+		&RegistrationEvent{token, ip, port, id, publicKey, xi, in, source,
 			counterAttestation})
 }
 
@@ -389,12 +392,14 @@ func (kcs *KeyCuratorServer) FetchAllUpdates(_ context.Context, in *emptypb.Empt
 		}
 
 		history = append(history, &pb.RegistrationEvent{
-			Token:     v.token,
-			Ip:        v.ip,
-			Port:      v.port,
-			Id:        int32(v.id),
-			PublicKey: &proto.G1{Point: v.publicKey.Bytes()},
-			Xi:        xiProto,
+			Token:              v.token,
+			Ip:                 v.ip,
+			Port:               v.port,
+			Id:                 int32(v.id),
+			PublicKey:          &proto.G1{Point: v.publicKey.Bytes()},
+			Xi:                 xiProto,
+			Request:            v.request,
+			CounterAttestation: counterAttestationToProto(v.counterAttestation),
 		})
 	}
 
@@ -465,7 +470,7 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 
 	kcs.kc.RegisterUser(id, publicKey, xi)
 	// TODO: also add the membership proof
-	kcs.addToHistory(in.Token, in.Ip, in.Port, int(in.Id), publicKey, xi,
+	kcs.addToHistory(in.Token, in.Ip, in.Port, int(in.Id), publicKey, xi, in,
 		source, counterAttestation)
 
 	opening := []*proto.G1{}

@@ -5,7 +5,7 @@
 
 DOCKER_USER=atosh502
 export HUB="docker.io/$DOCKER_USER"
-export TAG=$DOCKER_USER
+export TAG=btosh502
 
 export GOTOOLCHAIN=auto
 
@@ -28,5 +28,6 @@ kubectl apply -f ./dev/yaml/token-review-binding.yaml
 
 ./dev/tpm/deploy-tpm-secret.sh
 ./dev/tpm/patch-istiod-tpm-device.sh
+./dev/tpm/deploy-tpm-pubkey-configmap.sh
 
 cd -

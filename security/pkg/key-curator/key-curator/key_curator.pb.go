@@ -396,15 +396,17 @@ func (x *AllUpdatesResponse) GetHistory() []*RegistrationEvent {
 }
 
 type RegistrationEvent struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Token         string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
-	Ip            string                 `protobuf:"bytes,2,opt,name=ip,proto3" json:"ip,omitempty"`
-	Port          string                 `protobuf:"bytes,3,opt,name=port,proto3" json:"port,omitempty"`
-	Id            int32                  `protobuf:"varint,4,opt,name=id,proto3" json:"id,omitempty"`
-	PublicKey     *proto.G1              `protobuf:"bytes,5,opt,name=publicKey,proto3" json:"publicKey,omitempty"`
-	Xi            []*proto.G1            `protobuf:"bytes,6,rep,name=xi,proto3" json:"xi,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	Token              string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	Ip                 string                 `protobuf:"bytes,2,opt,name=ip,proto3" json:"ip,omitempty"`
+	Port               string                 `protobuf:"bytes,3,opt,name=port,proto3" json:"port,omitempty"`
+	Id                 int32                  `protobuf:"varint,4,opt,name=id,proto3" json:"id,omitempty"`
+	PublicKey          *proto.G1              `protobuf:"bytes,5,opt,name=publicKey,proto3" json:"publicKey,omitempty"`
+	Xi                 []*proto.G1            `protobuf:"bytes,6,rep,name=xi,proto3" json:"xi,omitempty"`
+	Request            *RegisterRequest       `protobuf:"bytes,7,opt,name=request,proto3" json:"request,omitempty"`
+	CounterAttestation *CounterAttestation    `protobuf:"bytes,8,opt,name=counterAttestation,proto3" json:"counterAttestation,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *RegistrationEvent) Reset() {
@@ -475,6 +477,20 @@ func (x *RegistrationEvent) GetPublicKey() *proto.G1 {
 func (x *RegistrationEvent) GetXi() []*proto.G1 {
 	if x != nil {
 		return x.Xi
+	}
+	return nil
+}
+
+func (x *RegistrationEvent) GetRequest() *RegisterRequest {
+	if x != nil {
+		return x.Request
+	}
+	return nil
+}
+
+func (x *RegistrationEvent) GetCounterAttestation() *CounterAttestation {
+	if x != nil {
+		return x.CounterAttestation
 	}
 	return nil
 }
@@ -618,14 +634,16 @@ const file_key_curator_proto_rawDesc = "" +
 	"\x12AllUpdatesResponse\x125\n" +
 	"\x0eallCommitments\x18\x01 \x03(\v2\r.rbe.proto.G1R\x0eallCommitments\x125\n" +
 	"\vallOpenings\x18\x02 \x03(\v2\x13.keycurator.OpeningR\vallOpenings\x127\n" +
-	"\ahistory\x18\x03 \x03(\v2\x1d.keycurator.RegistrationEventR\ahistory\"\xa9\x01\n" +
+	"\ahistory\x18\x03 \x03(\v2\x1d.keycurator.RegistrationEventR\ahistory\"\xb0\x02\n" +
 	"\x11RegistrationEvent\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12\x0e\n" +
 	"\x02ip\x18\x02 \x01(\tR\x02ip\x12\x12\n" +
 	"\x04port\x18\x03 \x01(\tR\x04port\x12\x0e\n" +
 	"\x02id\x18\x04 \x01(\x05R\x02id\x12+\n" +
 	"\tpublicKey\x18\x05 \x01(\v2\r.rbe.proto.G1R\tpublicKey\x12\x1d\n" +
-	"\x02xi\x18\x06 \x03(\v2\r.rbe.proto.G1R\x02xi\"\x82\x01\n" +
+	"\x02xi\x18\x06 \x03(\v2\r.rbe.proto.G1R\x02xi\x125\n" +
+	"\arequest\x18\a \x01(\v2\x1b.keycurator.RegisterRequestR\arequest\x12N\n" +
+	"\x12counterAttestation\x18\b \x01(\v2\x1e.keycurator.CounterAttestationR\x12counterAttestation\"\x82\x01\n" +
 	"\x12CounterAttestation\x12\x18\n" +
 	"\acounter\x18\x01 \x01(\x04R\acounter\x12\x18\n" +
 	"\amsgHash\x18\x02 \x01(\fR\amsgHash\x128\n" +
@@ -681,20 +699,22 @@ var file_key_curator_proto_depIdxs = []int32{
 	7,  // 9: keycurator.AllUpdatesResponse.history:type_name -> keycurator.RegistrationEvent
 	11, // 10: keycurator.RegistrationEvent.publicKey:type_name -> rbe.proto.G1
 	11, // 11: keycurator.RegistrationEvent.xi:type_name -> rbe.proto.G1
-	9,  // 12: keycurator.CounterAttestation.signature:type_name -> keycurator.ECDSASignature
-	4,  // 13: keycurator.KeyCurator.FetchUpdate:input_type -> keycurator.UpdateRequest
-	12, // 14: keycurator.KeyCurator.FetchAllUpdates:input_type -> google.protobuf.Empty
-	12, // 15: keycurator.KeyCurator.FetchPublicParams:input_type -> google.protobuf.Empty
-	2,  // 16: keycurator.KeyCurator.RegisterUser:input_type -> keycurator.RegisterRequest
-	3,  // 17: keycurator.KeyCurator.FetchUpdate:output_type -> keycurator.UserOpeningResponse
-	6,  // 18: keycurator.KeyCurator.FetchAllUpdates:output_type -> keycurator.AllUpdatesResponse
-	1,  // 19: keycurator.KeyCurator.FetchPublicParams:output_type -> keycurator.PublicParamsResponse
-	3,  // 20: keycurator.KeyCurator.RegisterUser:output_type -> keycurator.UserOpeningResponse
-	17, // [17:21] is the sub-list for method output_type
-	13, // [13:17] is the sub-list for method input_type
-	13, // [13:13] is the sub-list for extension type_name
-	13, // [13:13] is the sub-list for extension extendee
-	0,  // [0:13] is the sub-list for field type_name
+	2,  // 12: keycurator.RegistrationEvent.request:type_name -> keycurator.RegisterRequest
+	8,  // 13: keycurator.RegistrationEvent.counterAttestation:type_name -> keycurator.CounterAttestation
+	9,  // 14: keycurator.CounterAttestation.signature:type_name -> keycurator.ECDSASignature
+	4,  // 15: keycurator.KeyCurator.FetchUpdate:input_type -> keycurator.UpdateRequest
+	12, // 16: keycurator.KeyCurator.FetchAllUpdates:input_type -> google.protobuf.Empty
+	12, // 17: keycurator.KeyCurator.FetchPublicParams:input_type -> google.protobuf.Empty
+	2,  // 18: keycurator.KeyCurator.RegisterUser:input_type -> keycurator.RegisterRequest
+	3,  // 19: keycurator.KeyCurator.FetchUpdate:output_type -> keycurator.UserOpeningResponse
+	6,  // 20: keycurator.KeyCurator.FetchAllUpdates:output_type -> keycurator.AllUpdatesResponse
+	1,  // 21: keycurator.KeyCurator.FetchPublicParams:output_type -> keycurator.PublicParamsResponse
+	3,  // 22: keycurator.KeyCurator.RegisterUser:output_type -> keycurator.UserOpeningResponse
+	19, // [19:23] is the sub-list for method output_type
+	15, // [15:19] is the sub-list for method input_type
+	15, // [15:15] is the sub-list for extension type_name
+	15, // [15:15] is the sub-list for extension extendee
+	0,  // [0:15] is the sub-list for field type_name
 }
 
 func init() { file_key_curator_proto_init() }
