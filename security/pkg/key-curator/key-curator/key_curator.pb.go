@@ -191,7 +191,8 @@ type UserOpeningResponse struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	Commitments        []*proto.G1            `protobuf:"bytes,1,rep,name=commitments,proto3" json:"commitments,omitempty"`
 	Opening            []*proto.G1            `protobuf:"bytes,2,rep,name=opening,proto3" json:"opening,omitempty"`
-	CounterAttestation *CounterAttestation    `protobuf:"bytes,3,opt,name=counterAttestation,proto3" json:"counterAttestation,omitempty"` // TODO: add membership proof here
+	CounterAttestation *CounterAttestation    `protobuf:"bytes,3,opt,name=counterAttestation,proto3" json:"counterAttestation,omitempty"`
+	Proof              *proto.G1              `protobuf:"bytes,4,opt,name=proof,proto3" json:"proof,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -243,6 +244,13 @@ func (x *UserOpeningResponse) GetOpening() []*proto.G1 {
 func (x *UserOpeningResponse) GetCounterAttestation() *CounterAttestation {
 	if x != nil {
 		return x.CounterAttestation
+	}
+	return nil
+}
+
+func (x *UserOpeningResponse) GetProof() *proto.G1 {
+	if x != nil {
+		return x.Proof
 	}
 	return nil
 }
@@ -404,7 +412,8 @@ type RegistrationEvent struct {
 	PublicKey          *proto.G1              `protobuf:"bytes,5,opt,name=publicKey,proto3" json:"publicKey,omitempty"`
 	Xi                 []*proto.G1            `protobuf:"bytes,6,rep,name=xi,proto3" json:"xi,omitempty"`
 	Request            *RegisterRequest       `protobuf:"bytes,7,opt,name=request,proto3" json:"request,omitempty"`
-	CounterAttestation *CounterAttestation    `protobuf:"bytes,8,opt,name=counterAttestation,proto3" json:"counterAttestation,omitempty"`
+	Proof              *proto.G1              `protobuf:"bytes,8,opt,name=proof,proto3" json:"proof,omitempty"`
+	CounterAttestation *CounterAttestation    `protobuf:"bytes,9,opt,name=counterAttestation,proto3" json:"counterAttestation,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -484,6 +493,13 @@ func (x *RegistrationEvent) GetXi() []*proto.G1 {
 func (x *RegistrationEvent) GetRequest() *RegisterRequest {
 	if x != nil {
 		return x.Request
+	}
+	return nil
+}
+
+func (x *RegistrationEvent) GetProof() *proto.G1 {
+	if x != nil {
+		return x.Proof
 	}
 	return nil
 }
@@ -622,11 +638,12 @@ const file_key_curator_proto_rawDesc = "" +
 	"\x02xi\x18\x03 \x03(\v2\r.rbe.proto.G1R\x02xi\x12\x0e\n" +
 	"\x02ip\x18\x04 \x01(\tR\x02ip\x12\x12\n" +
 	"\x04port\x18\x05 \x01(\tR\x04port\x12\x14\n" +
-	"\x05token\x18\x06 \x01(\tR\x05token\"\xbf\x01\n" +
+	"\x05token\x18\x06 \x01(\tR\x05token\"\xe4\x01\n" +
 	"\x13UserOpeningResponse\x12/\n" +
 	"\vcommitments\x18\x01 \x03(\v2\r.rbe.proto.G1R\vcommitments\x12'\n" +
 	"\aopening\x18\x02 \x03(\v2\r.rbe.proto.G1R\aopening\x12N\n" +
-	"\x12counterAttestation\x18\x03 \x01(\v2\x1e.keycurator.CounterAttestationR\x12counterAttestation\"\x1f\n" +
+	"\x12counterAttestation\x18\x03 \x01(\v2\x1e.keycurator.CounterAttestationR\x12counterAttestation\x12#\n" +
+	"\x05proof\x18\x04 \x01(\v2\r.rbe.proto.G1R\x05proof\"\x1f\n" +
 	"\rUpdateRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x05R\x02id\"2\n" +
 	"\aOpening\x12'\n" +
@@ -634,7 +651,7 @@ const file_key_curator_proto_rawDesc = "" +
 	"\x12AllUpdatesResponse\x125\n" +
 	"\x0eallCommitments\x18\x01 \x03(\v2\r.rbe.proto.G1R\x0eallCommitments\x125\n" +
 	"\vallOpenings\x18\x02 \x03(\v2\x13.keycurator.OpeningR\vallOpenings\x127\n" +
-	"\ahistory\x18\x03 \x03(\v2\x1d.keycurator.RegistrationEventR\ahistory\"\xb0\x02\n" +
+	"\ahistory\x18\x03 \x03(\v2\x1d.keycurator.RegistrationEventR\ahistory\"\xd5\x02\n" +
 	"\x11RegistrationEvent\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12\x0e\n" +
 	"\x02ip\x18\x02 \x01(\tR\x02ip\x12\x12\n" +
@@ -642,8 +659,9 @@ const file_key_curator_proto_rawDesc = "" +
 	"\x02id\x18\x04 \x01(\x05R\x02id\x12+\n" +
 	"\tpublicKey\x18\x05 \x01(\v2\r.rbe.proto.G1R\tpublicKey\x12\x1d\n" +
 	"\x02xi\x18\x06 \x03(\v2\r.rbe.proto.G1R\x02xi\x125\n" +
-	"\arequest\x18\a \x01(\v2\x1b.keycurator.RegisterRequestR\arequest\x12N\n" +
-	"\x12counterAttestation\x18\b \x01(\v2\x1e.keycurator.CounterAttestationR\x12counterAttestation\"\x82\x01\n" +
+	"\arequest\x18\a \x01(\v2\x1b.keycurator.RegisterRequestR\arequest\x12#\n" +
+	"\x05proof\x18\b \x01(\v2\r.rbe.proto.G1R\x05proof\x12N\n" +
+	"\x12counterAttestation\x18\t \x01(\v2\x1e.keycurator.CounterAttestationR\x12counterAttestation\"\x82\x01\n" +
 	"\x12CounterAttestation\x12\x18\n" +
 	"\acounter\x18\x01 \x01(\x04R\acounter\x12\x18\n" +
 	"\amsgHash\x18\x02 \x01(\fR\amsgHash\x128\n" +
@@ -693,28 +711,30 @@ var file_key_curator_proto_depIdxs = []int32{
 	11, // 3: keycurator.UserOpeningResponse.commitments:type_name -> rbe.proto.G1
 	11, // 4: keycurator.UserOpeningResponse.opening:type_name -> rbe.proto.G1
 	8,  // 5: keycurator.UserOpeningResponse.counterAttestation:type_name -> keycurator.CounterAttestation
-	11, // 6: keycurator.Opening.opening:type_name -> rbe.proto.G1
-	11, // 7: keycurator.AllUpdatesResponse.allCommitments:type_name -> rbe.proto.G1
-	5,  // 8: keycurator.AllUpdatesResponse.allOpenings:type_name -> keycurator.Opening
-	7,  // 9: keycurator.AllUpdatesResponse.history:type_name -> keycurator.RegistrationEvent
-	11, // 10: keycurator.RegistrationEvent.publicKey:type_name -> rbe.proto.G1
-	11, // 11: keycurator.RegistrationEvent.xi:type_name -> rbe.proto.G1
-	2,  // 12: keycurator.RegistrationEvent.request:type_name -> keycurator.RegisterRequest
-	8,  // 13: keycurator.RegistrationEvent.counterAttestation:type_name -> keycurator.CounterAttestation
-	9,  // 14: keycurator.CounterAttestation.signature:type_name -> keycurator.ECDSASignature
-	4,  // 15: keycurator.KeyCurator.FetchUpdate:input_type -> keycurator.UpdateRequest
-	12, // 16: keycurator.KeyCurator.FetchAllUpdates:input_type -> google.protobuf.Empty
-	12, // 17: keycurator.KeyCurator.FetchPublicParams:input_type -> google.protobuf.Empty
-	2,  // 18: keycurator.KeyCurator.RegisterUser:input_type -> keycurator.RegisterRequest
-	3,  // 19: keycurator.KeyCurator.FetchUpdate:output_type -> keycurator.UserOpeningResponse
-	6,  // 20: keycurator.KeyCurator.FetchAllUpdates:output_type -> keycurator.AllUpdatesResponse
-	1,  // 21: keycurator.KeyCurator.FetchPublicParams:output_type -> keycurator.PublicParamsResponse
-	3,  // 22: keycurator.KeyCurator.RegisterUser:output_type -> keycurator.UserOpeningResponse
-	19, // [19:23] is the sub-list for method output_type
-	15, // [15:19] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	11, // 6: keycurator.UserOpeningResponse.proof:type_name -> rbe.proto.G1
+	11, // 7: keycurator.Opening.opening:type_name -> rbe.proto.G1
+	11, // 8: keycurator.AllUpdatesResponse.allCommitments:type_name -> rbe.proto.G1
+	5,  // 9: keycurator.AllUpdatesResponse.allOpenings:type_name -> keycurator.Opening
+	7,  // 10: keycurator.AllUpdatesResponse.history:type_name -> keycurator.RegistrationEvent
+	11, // 11: keycurator.RegistrationEvent.publicKey:type_name -> rbe.proto.G1
+	11, // 12: keycurator.RegistrationEvent.xi:type_name -> rbe.proto.G1
+	2,  // 13: keycurator.RegistrationEvent.request:type_name -> keycurator.RegisterRequest
+	11, // 14: keycurator.RegistrationEvent.proof:type_name -> rbe.proto.G1
+	8,  // 15: keycurator.RegistrationEvent.counterAttestation:type_name -> keycurator.CounterAttestation
+	9,  // 16: keycurator.CounterAttestation.signature:type_name -> keycurator.ECDSASignature
+	4,  // 17: keycurator.KeyCurator.FetchUpdate:input_type -> keycurator.UpdateRequest
+	12, // 18: keycurator.KeyCurator.FetchAllUpdates:input_type -> google.protobuf.Empty
+	12, // 19: keycurator.KeyCurator.FetchPublicParams:input_type -> google.protobuf.Empty
+	2,  // 20: keycurator.KeyCurator.RegisterUser:input_type -> keycurator.RegisterRequest
+	3,  // 21: keycurator.KeyCurator.FetchUpdate:output_type -> keycurator.UserOpeningResponse
+	6,  // 22: keycurator.KeyCurator.FetchAllUpdates:output_type -> keycurator.AllUpdatesResponse
+	1,  // 23: keycurator.KeyCurator.FetchPublicParams:output_type -> keycurator.PublicParamsResponse
+	3,  // 24: keycurator.KeyCurator.RegisterUser:output_type -> keycurator.UserOpeningResponse
+	21, // [21:25] is the sub-list for method output_type
+	17, // [17:21] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_key_curator_proto_init() }

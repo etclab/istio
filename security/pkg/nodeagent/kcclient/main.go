@@ -118,7 +118,7 @@ func NewKCClient(opts *security.Options, tlsOpts *TLSOptions) (security.KeyCurat
 	return c, nil
 }
 
-func (c *KCClient) FetchAllUpdates() ([]*bls.G1, [][]*bls.G1, []*security.RbeId, error) {
+func (c *KCClient) FetchAllUpdates(pp *rbe.PublicParams) ([]*bls.G1, [][]*bls.G1, []*security.RbeId, error) {
 	ctx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs("ClusterID", c.opts.ClusterID))
 	updResp, err := c.client.FetchAllUpdates(ctx, &emptypb.Empty{})
 	if err != nil {
@@ -145,6 +145,8 @@ func (c *KCClient) FetchAllUpdates() ([]*bls.G1, [][]*bls.G1, []*security.RbeId,
 		openings = append(openings, userOpening)
 	}
 
+	pp.Commitments = commitments
+
 	history := updResp.GetHistory() // history is like a append only log
 	allRbeIds := make([]*security.RbeId, 0)
 	var prevCounter uint64 = 0
@@ -166,6 +168,19 @@ func (c *KCClient) FetchAllUpdates() ([]*bls.G1, [][]*bls.G1, []*security.RbeId,
 		regMsg, err := proto.Marshal(registrationEvent.Request)
 		if err != nil {
 			log.Errorf("[dev] error marshalling register request: %v", err)
+		}
+
+		proof := &bls.G1{}
+		proof.SetBytes(registrationEvent.GetProof().GetPoint())
+		pubKey := &bls.G1{}
+		pubKey.SetBytes(registrationEvent.GetPublicKey().GetPoint())
+
+		if rbe.VerifyMembership(pp, int(registrationEvent.Id), pubKey, proof) {
+			log.Infof("[dev] membership verified successfully")
+		} else {
+			errMsg := fmt.Sprintf("[dev] membership verification failed for %s:%d", registrationEvent.GetIp(), port)
+			log.Errorf(errMsg)
+			return nil, nil, nil, fmt.Errorf("%s", errMsg)
 		}
 
 		ctrAttestation := attestationFromProto(registrationEvent.CounterAttestation)
@@ -197,7 +212,7 @@ func attestationFromProto(attestationPb *pb.CounterAttestation) *trinc.CounterAt
 	return attestation
 }
 
-func (c *KCClient) FetchUpdate(id int32) ([]*bls.G1, []*bls.G1, error) {
+func (c *KCClient) FetchUpdate(id int32) ([]*bls.G1, []*bls.G1, *bls.G1, error) {
 	updReq := &pb.UpdateRequest{
 		Id: id,
 	}
@@ -206,19 +221,17 @@ func (c *KCClient) FetchUpdate(id int32) ([]*bls.G1, []*bls.G1, error) {
 	updResp, err := c.client.FetchUpdate(ctx, updReq)
 	if err != nil {
 		log.Errorf("[dev] err on FetchUpdate(): %v", err)
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
-	commitments, opening, ctrAttestation := getCommitmentsOpenings(updResp)
-	// TODO: do something with the counter attestation
-	log.Infof("[dev] do something with counter attestation (after FetchUpdate): %v", ctrAttestation)
+	commitments, opening, _, proof := getCommitmentsOpenings(updResp)
 
-	return commitments, opening, nil
+	return commitments, opening, proof, nil
 }
 
 // TODO: change/update name for this function
 func getCommitmentsOpenings(uoResp *pb.UserOpeningResponse) ([]*bls.G1,
-	[]*bls.G1, *trinc.CounterAttestation) {
+	[]*bls.G1, *trinc.CounterAttestation, *bls.G1) {
 
 	commitments := []*bls.G1{}
 	for _, v := range uoResp.GetCommitments() {
@@ -234,22 +247,16 @@ func getCommitmentsOpenings(uoResp *pb.UserOpeningResponse) ([]*bls.G1,
 		opening = append(opening, g1)
 	}
 
-	attestation := &trinc.CounterAttestation{}
-	attestationPb := uoResp.GetCounterAttestation()
-	if attestationPb != nil {
-		attestation.Counter = attestationPb.GetCounter()
-		attestation.MsgHash = attestationPb.GetMsgHash()
-		attestation.Signature = &trinc.ECDSASignature{
-			R: new(big.Int).SetBytes(attestationPb.GetSignature().GetR()),
-			S: new(big.Int).SetBytes(attestationPb.GetSignature().GetS()),
-		}
-	}
+	attestation := attestationFromProto(uoResp.GetCounterAttestation())
 
-	return commitments, opening, attestation
+	proof := &bls.G1{}
+	proof.SetBytes(uoResp.GetProof().GetPoint())
+
+	return commitments, opening, attestation, proof
 }
 
-// func (c *KCClient) RegisterUser(user *rbe.User, id int32) ([]*bls.G1, []*bls.G1, error) {
-func (c *KCClient) RegisterUser(user *rbe.User, rbeId *security.RbeId) ([]*bls.G1, []*bls.G1, error) {
+func (c *KCClient) RegisterUser(user *rbe.User, rbeId *security.RbeId) ([]*bls.G1,
+	[]*bls.G1, *bls.G1, error) {
 	xi := user.Xi()
 
 	xiProto := make([]*rbeproto.G1, len(xi))
@@ -276,9 +283,9 @@ func (c *KCClient) RegisterUser(user *rbe.User, rbeId *security.RbeId) ([]*bls.G
 	regR, err := c.client.RegisterUser(ctx, regReq)
 	if err != nil {
 		log.Errorf("[dev] err on RegisterUser(): %v", err)
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	commitments, opening, ctrAttestation := getCommitmentsOpenings(regR)
+	commitments, opening, ctrAttestation, proof := getCommitmentsOpenings(regR)
 	regMsg, err := proto.Marshal(regReq)
 	if err != nil {
 		log.Errorf("[dev] error marshalling register request: %v", err)
@@ -294,10 +301,10 @@ func (c *KCClient) RegisterUser(user *rbe.User, rbeId *security.RbeId) ([]*bls.G
 		}
 	} else {
 		log.Errorf("[dev] failure: attestation has an invalid signature")
-		return nil, nil, fmt.Errorf("[dev] attestation has an invalid signature")
+		return nil, nil, nil, fmt.Errorf("[dev] attestation has an invalid signature")
 	}
 
-	return commitments, opening, nil
+	return commitments, opening, proof, nil
 }
 
 func (c *KCClient) FetchPublicParams() (*rbe.PublicParams, error) {
