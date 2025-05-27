@@ -15,7 +15,8 @@ FROM ${ISTIO_BASE_REGISTRY}/iptables:${BASE_VERSION} AS distroless
 # hadolint ignore=DL3006
 FROM ${BASE_DISTRIBUTION:-debug}
 
-RUN sudo apt-get update && sudo apt-get -qqy install linux-tools-generic
+RUN sudo apt-get update && sudo apt-get -qqy install linux-tools-generic && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /
 
