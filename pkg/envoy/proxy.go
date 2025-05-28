@@ -61,9 +61,8 @@ type ProxyConfig struct {
 func NewProxy(cfg ProxyConfig) Proxy {
 	// inject tracing flag for higher levels
 	var args []string
-	// logLevel, componentLogs := splitComponentLog("debug,misc:info")
-	// logLevel, componentLogs := splitComponentLog("debug,misc:error")
-	logLevel, componentLogs := splitComponentLog(cfg.LogLevel)
+	// logLevel, componentLogs := splitComponentLog(cfg.LogLevel)
+	logLevel, componentLogs := splitComponentLog("debug,misc:info")
 	if logLevel != "" {
 		args = append(args, "-l", logLevel)
 	}
