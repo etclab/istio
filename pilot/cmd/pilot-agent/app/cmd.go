@@ -131,12 +131,12 @@ func newProxyCommand(sds istioagent.SDSServiceFactory) *cobra.Command {
 			}
 
 			envoyOptions := envoy.ProxyConfig{
-				// LogLevel: proxyArgs.ProxyLogLevel,
-				LogLevel: "debug",
-				// ComponentLogLevel: proxyArgs.ProxyComponentLogLevel,
-				ComponentLogLevel: "misc:info",
-				LogAsJSON:         loggingOptions.JSONEncoding,
-				NodeIPs:           proxyArgs.IPAddresses,
+				LogLevel: proxyArgs.ProxyLogLevel,
+				// LogLevel: "debug",
+				ComponentLogLevel: proxyArgs.ProxyComponentLogLevel,
+				// ComponentLogLevel: "misc:info",
+				LogAsJSON: loggingOptions.JSONEncoding,
+				NodeIPs:   proxyArgs.IPAddresses,
 				// TODO: add the pod ports here
 				Sidecar:        proxyArgs.Type == model.SidecarProxy,
 				OutlierLogPath: proxyArgs.OutlierLogPath,
@@ -185,14 +185,17 @@ func addFlags(proxyCmd *cobra.Command) {
 	// DEPRECATED. Flags for proxy configuration
 	proxyCmd.PersistentFlags().StringVar(&proxyArgs.ServiceCluster, "serviceCluster", constants.ServiceClusterName, "Service cluster")
 	// Log levels are provided by the library https://github.com/gabime/spdlog, used by Envoy.
-	proxyCmd.PersistentFlags().StringVar(&proxyArgs.ProxyLogLevel, "proxyLogLevel", "debug,misc:info",
+	// proxyCmd.PersistentFlags().StringVar(&proxyArgs.ProxyLogLevel, "proxyLogLevel", "debug,misc:info",
+	// proxyCmd.PersistentFlags().StringVar(&proxyArgs.ProxyLogLevel, "proxyLogLevel", "debug,misc:error",
+	proxyCmd.PersistentFlags().StringVar(&proxyArgs.ProxyLogLevel, "proxyLogLevel", "warning,misc:error",
 		fmt.Sprintf("The log level used to start the Envoy proxy (choose from {%s, %s, %s, %s, %s, %s, %s})."+
 			"Level may also include one or more scopes, such as 'info,misc:error,upstream:debug'",
 			"trace", "debug", "info", "warning", "error", "critical", "off"))
 	proxyCmd.PersistentFlags().IntVar(&proxyArgs.Concurrency, "concurrency", 0, "number of worker threads to run")
 	// See https://www.envoyproxy.io/docs/envoy/latest/operations/cli#cmdoption-component-log-level
 	// note: misc:info in the component level is required to see logs emitted by ENVOY_LOG_MISC()
-	proxyCmd.PersistentFlags().StringVar(&proxyArgs.ProxyComponentLogLevel, "proxyComponentLogLevel", "misc:info",
+	// proxyCmd.PersistentFlags().StringVar(&proxyArgs.ProxyComponentLogLevel, "proxyComponentLogLevel", "misc:info",
+	proxyCmd.PersistentFlags().StringVar(&proxyArgs.ProxyComponentLogLevel, "proxyComponentLogLevel", "",
 		"The component log level used to start the Envoy proxy. Deprecated, use proxyLogLevel instead")
 	proxyCmd.PersistentFlags().StringVar(&proxyArgs.TemplateFile, "templateFile", "",
 		"Go template bootstrap config")
