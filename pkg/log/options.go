@@ -107,9 +107,10 @@ type Options struct {
 // DefaultOptions returns a new set of options, initialized to the defaults
 func DefaultOptions() *Options {
 	return &Options{
-		OutputPaths:          []string{defaultOutputPath},
-		ErrorOutputPaths:     []string{defaultErrorOutputPath},
-		defaultOutputLevels:  "default:debug,grpc:none,ca:debug",
+		OutputPaths:      []string{defaultOutputPath},
+		ErrorOutputPaths: []string{defaultErrorOutputPath},
+		// defaultOutputLevels:  "default:debug,grpc:none,ca:debug",
+		defaultOutputLevels:  "default:info,grpc:none",
 		stackTraceLevels:     DefaultScopeName + ":" + levelToString[defaultStackTraceLevel],
 		logGRPC:              false,
 		useStackdriverFormat: false,
