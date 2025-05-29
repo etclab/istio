@@ -33,7 +33,7 @@ message UserOpeningResponse {
     repeated rbe.proto.G1 commitments = 1; 
     repeated rbe.proto.G1 opening = 2; 
     CounterAttestation counterAttestation = 3;
-    // TODO: add membership proof here
+    rbe.proto.G1 proof = 4;
 }
 
 message UpdateRequest {
@@ -57,6 +57,9 @@ message RegistrationEvent {
     int32 id = 4;
     rbe.proto.G1 publicKey = 5;
     repeated rbe.proto.G1 xi = 6;
+    RegisterRequest request = 7;
+    rbe.proto.G1 proof = 8;
+    CounterAttestation counterAttestation = 9;
 }
 
 message CounterAttestation {

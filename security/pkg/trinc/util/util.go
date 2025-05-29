@@ -1,6 +1,7 @@
 package trincutil
 
 import (
+	"bytes"
 	"crypto/sha256"
 
 	"github.com/etclab/trinc"
@@ -8,6 +9,7 @@ import (
 )
 
 const TPM_SK_PATH = "/etc/tpm-keys/privateKey"
+const TPM_PK_PATH = "/etc/tpm-keys/publicKey"
 const DefaultTPMDevPath = "/dev/tpmrm0"
 
 // returns and returns the secret key from TPM
@@ -74,34 +76,35 @@ func DoAttestCounter(msg []byte) (attestation *trinc.CounterAttestation, err err
 // 	}
 // }
 
-// func doVerifyCounter(pkFile, msgFile, attestationFile string) {
-// 	pk, err := trinc.LoadECDSAPublicKeyFromPEMFile(pkFile)
-// 	if err != nil {
-// 		mu.Fatalf("error: can't read public key file %q: %v", pkFile, err)
-// 	}
+func DoVerifyCounter(msgBytes []byte, attestation *trinc.CounterAttestation) bool {
+	if attestation == nil || msgBytes == nil {
+		log.Errorf("[dev] error: attestation or msgBytes is nil")
+		return false
+	}
 
-// 	hash := hashFile(msgFile)
-// 	fmt.Printf("expected hash: %x\n", hash)
+	pk, err := trinc.LoadECDSAPublicKeyFromPEMFile(TPM_PK_PATH)
+	if err != nil {
+		log.Errorf("[dev] error: can't read public key file %q: %v", TPM_PK_PATH, err)
+		return false
+	}
+	log.Infof("[dev] Read TPM_PK_PATH %v", pk)
 
-// 	a, err := trinc.LoadCounterAttestationFromFile(attestationFile)
-// 	if err != nil {
-// 		mu.Fatalf("error: can't read attestation file %q: %v", attestationFile, err)
-// 	}
-// 	fmt.Println(a)
+	msgHash := sha256.Sum256(msgBytes)
 
-// 	result := a.Verify(pk)
-// 	if !result {
-// 		fmt.Println("failure: attestation has an invalid signature")
-// 		os.Exit(1)
-// 	}
+	result := attestation.Verify(pk)
+	if !result {
+		log.Errorf("[dev] failure: attestation has an invalid signature")
+		return false
+	}
 
-// 	if !bytes.Equal(a.MsgHash, hash) {
-// 		fmt.Println("failure: attestation MsgHash != expected hash")
-// 		os.Exit(1)
-// 	}
+	if !bytes.Equal(attestation.MsgHash, msgHash[:]) {
+		log.Errorf("[dev] failure: attestation MsgHash != expected hash")
+		return false
+	}
 
-// 	fmt.Println("attestation verified successfully")
-// }
+	log.Infof("[dev] attestation verified successfully")
+	return true
+}
 
 // func doVerifyPCR(pkFile, msgFile, attestationFile string) {
 // 	pk, err := trinc.LoadECDSAPublicKeyFromPEMFile(pkFile)
