@@ -27,6 +27,7 @@ const RBE_USER_PREFIX = "rbe-user/"
 const RBE_PP_KEY = "rbe-system/pp"
 
 type RegistrationEvent struct {
+	// TODO: remove these fileds as "request" already has them
 	token     string
 	ip        string
 	port      string
@@ -34,10 +35,11 @@ type RegistrationEvent struct {
 	publicKey *bls.G1
 	xi        []*bls.G1
 
+	request *pb.RegisterRequest
+
 	source string // either api or etcd
 
 	counterAttestation *trinc.CounterAttestation
-	// TODO: also needs to store the membership proof
 }
 
 // TODO: rename this to something more meaningful
@@ -351,10 +353,10 @@ func (kcs *KeyCuratorServer) FetchPublicParams(_ context.Context, in *emptypb.Em
 
 // how does history change when multiple istiod instances are running?
 func (kcs *KeyCuratorServer) addToHistory(token string, ip string, port string,
-	id int, publicKey *bls.G1, xi []*bls.G1, source string,
+	id int, publicKey *bls.G1, xi []*bls.G1, in *pb.RegisterRequest, source string,
 	counterAttestation *trinc.CounterAttestation) {
 	kcs.history = append(kcs.history,
-		&RegistrationEvent{token, ip, port, id, publicKey, xi, source,
+		&RegistrationEvent{token, ip, port, id, publicKey, xi, in, source,
 			counterAttestation})
 }
 
@@ -388,13 +390,20 @@ func (kcs *KeyCuratorServer) FetchAllUpdates(_ context.Context, in *emptypb.Empt
 			}
 		}
 
+		id := int(v.request.Id)
+		proof := kcs.kc.ProveMembership(id)
+		pbProof := &proto.G1{Point: proof.Bytes()}
+
 		history = append(history, &pb.RegistrationEvent{
-			Token:     v.token,
-			Ip:        v.ip,
-			Port:      v.port,
-			Id:        int32(v.id),
-			PublicKey: &proto.G1{Point: v.publicKey.Bytes()},
-			Xi:        xiProto,
+			Token:              v.token,
+			Ip:                 v.ip,
+			Port:               v.port,
+			Id:                 int32(v.id),
+			PublicKey:          &proto.G1{Point: v.publicKey.Bytes()},
+			Xi:                 xiProto,
+			Request:            v.request,
+			Proof:              pbProof,
+			CounterAttestation: counterAttestationToProto(v.counterAttestation),
 		})
 	}
 
@@ -464,8 +473,7 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 	log.Infof("[dev] counter attestation: %v", counterAttestation)
 
 	kcs.kc.RegisterUser(id, publicKey, xi)
-	// TODO: also add the membership proof
-	kcs.addToHistory(in.Token, in.Ip, in.Port, int(in.Id), publicKey, xi,
+	kcs.addToHistory(in.Token, in.Ip, in.Port, int(in.Id), publicKey, xi, in,
 		source, counterAttestation)
 
 	opening := []*proto.G1{}
@@ -488,9 +496,11 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 		kcs.StoreAtEtcd(id, in)
 	}
 
-	// TODO: send the counter attestation as well as the membership proof
+	proof := kcs.kc.ProveMembership(id)
+	pbProof := &proto.G1{Point: proof.Bytes()}
+
 	return &pb.UserOpeningResponse{Opening: opening, Commitments: commitments,
-		CounterAttestation: attestationProto}, nil
+		CounterAttestation: attestationProto, Proof: pbProof}, nil
 }
 
 func (kcs *KeyCuratorServer) RegisterUser(_ context.Context, in *pb.RegisterRequest) (*pb.UserOpeningResponse, error) {
