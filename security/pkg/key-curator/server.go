@@ -17,7 +17,6 @@ import (
 	"istio.io/istio/pkg/log"
 	"istio.io/istio/pkg/security"
 	pb "istio.io/istio/security/pkg/key-curator/key-curator"
-	trincutil "istio.io/istio/security/pkg/trinc/util"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 	gproto "google.golang.org/protobuf/proto"
@@ -395,15 +394,16 @@ func (kcs *KeyCuratorServer) FetchAllUpdates(_ context.Context, in *emptypb.Empt
 		pbProof := &proto.G1{Point: proof.Bytes()}
 
 		history = append(history, &pb.RegistrationEvent{
-			Token:              v.token,
-			Ip:                 v.ip,
-			Port:               v.port,
-			Id:                 int32(v.id),
-			PublicKey:          &proto.G1{Point: v.publicKey.Bytes()},
-			Xi:                 xiProto,
-			Request:            v.request,
-			Proof:              pbProof,
-			CounterAttestation: counterAttestationToProto(v.counterAttestation),
+			Token:     v.token,
+			Ip:        v.ip,
+			Port:      v.port,
+			Id:        int32(v.id),
+			PublicKey: &proto.G1{Point: v.publicKey.Bytes()},
+			Xi:        xiProto,
+			Request:   v.request,
+			Proof:     pbProof,
+			// CounterAttestation: counterAttestationToProto(v.counterAttestation),
+			CounterAttestation: nil,
 		})
 	}
 
@@ -427,10 +427,12 @@ func (kcs *KeyCuratorServer) FetchUpdate(_ context.Context, in *pb.UpdateRequest
 		commitments = append(commitments, &proto.G1{Point: v.Bytes()})
 	}
 
-	attestationProto := counterAttestationToProto(kcs.attestations[id])
+	// attestationProto := counterAttestationToProto(kcs.attestations[id])
 
+	// return &pb.UserOpeningResponse{Opening: opening, Commitments: commitments,
+	// 	CounterAttestation: attestationProto}, nil
 	return &pb.UserOpeningResponse{Opening: opening, Commitments: commitments,
-		CounterAttestation: attestationProto}, nil
+		CounterAttestation: nil}, nil
 }
 
 func counterAttestationToProto(counterAttestation *trinc.CounterAttestation) *pb.CounterAttestation {
@@ -461,20 +463,22 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 		}
 	}
 
-	regMsg, err := gproto.Marshal(in)
+	_, err := gproto.Marshal(in)
 	if err != nil {
 		log.Errorf("[dev] error marshalling register request: %v", err)
 	}
-	counterAttestation, err := trincutil.DoAttestCounter(regMsg)
-	if err != nil {
-		log.Errorf("[dev] error generating counter attestation: %v", err)
-	}
-	kcs.attestations[id] = counterAttestation
-	log.Infof("[dev] counter attestation: %v", counterAttestation)
+	// counterAttestation, err := trincutil.DoAttestCounter(regMsg)
+	// if err != nil {
+	// 	log.Errorf("[dev] error generating counter attestation: %v", err)
+	// }
+	// kcs.attestations[id] = counterAttestation
+	// log.Infof("[dev] counter attestation: %v", counterAttestation)
 
 	kcs.kc.RegisterUser(id, publicKey, xi)
+	// kcs.addToHistory(in.Token, in.Ip, in.Port, int(in.Id), publicKey, xi, in,
+	// 	source, counterAttestation)
 	kcs.addToHistory(in.Token, in.Ip, in.Port, int(in.Id), publicKey, xi, in,
-		source, counterAttestation)
+		source, nil)
 
 	opening := []*proto.G1{}
 	for _, v := range kcs.kc.UserOpenings[id] {
@@ -486,7 +490,7 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 		commitments = append(commitments, &proto.G1{Point: v.Bytes()})
 	}
 
-	attestationProto := counterAttestationToProto(counterAttestation)
+	// attestationProto := counterAttestationToProto(counterAttestation)
 
 	kcs.registeredIds[id] = true
 	if source == "api" {
@@ -499,8 +503,10 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 	proof := kcs.kc.ProveMembership(id)
 	pbProof := &proto.G1{Point: proof.Bytes()}
 
+	// return &pb.UserOpeningResponse{Opening: opening, Commitments: commitments,
+	// 	CounterAttestation: attestationProto, Proof: pbProof}, nil
 	return &pb.UserOpeningResponse{Opening: opening, Commitments: commitments,
-		CounterAttestation: attestationProto, Proof: pbProof}, nil
+		CounterAttestation: nil, Proof: pbProof}, nil
 }
 
 func (kcs *KeyCuratorServer) RegisterUser(_ context.Context, in *pb.RegisterRequest) (*pb.UserOpeningResponse, error) {

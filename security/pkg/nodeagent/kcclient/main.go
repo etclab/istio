@@ -23,7 +23,6 @@ import (
 	"istio.io/istio/pkg/security"
 	pb "istio.io/istio/security/pkg/key-curator/key-curator"
 	"istio.io/istio/security/pkg/nodeagent/caclient"
-	trincutil "istio.io/istio/security/pkg/trinc/util"
 )
 
 var kcClientLog = log.RegisterScope("kcclient", "key curator client debugging")
@@ -149,7 +148,7 @@ func (c *KCClient) FetchAllUpdates(pp *rbe.PublicParams) ([]*bls.G1, [][]*bls.G1
 
 	history := updResp.GetHistory() // history is like a append only log
 	allRbeIds := make([]*security.RbeId, 0)
-	var prevCounter uint64 = 0
+	// var prevCounter uint64 = 0
 	for _, registrationEvent := range history {
 		// TODO: make everything string
 		port, err := strconv.Atoi(registrationEvent.GetPort())
@@ -165,7 +164,7 @@ func (c *KCClient) FetchAllUpdates(pp *rbe.PublicParams) ([]*bls.G1, [][]*bls.G1
 		}
 		allRbeIds = append(allRbeIds, rbeId)
 
-		regMsg, err := proto.Marshal(registrationEvent.Request)
+		_, err = proto.Marshal(registrationEvent.Request)
 		if err != nil {
 			log.Errorf("[dev] error marshalling register request: %v", err)
 		}
@@ -183,14 +182,14 @@ func (c *KCClient) FetchAllUpdates(pp *rbe.PublicParams) ([]*bls.G1, [][]*bls.G1
 			return nil, nil, nil, fmt.Errorf("%s", errMsg)
 		}
 
-		ctrAttestation := attestationFromProto(registrationEvent.CounterAttestation)
-		if trincutil.DoVerifyCounter(regMsg, ctrAttestation) && ctrAttestation.Counter > prevCounter {
-			log.Infof("[dev] attestation verified successfully")
-			prevCounter = ctrAttestation.Counter
-		} else {
-			log.Errorf("[dev] failure: attestation has an invalid signature")
-			return nil, nil, nil, fmt.Errorf("[dev] attestation has an invalid signature")
-		}
+		// ctrAttestation := attestationFromProto(registrationEvent.CounterAttestation)
+		// if trincutil.DoVerifyCounter(regMsg, ctrAttestation) && ctrAttestation.Counter > prevCounter {
+		// 	log.Infof("[dev] attestation verified successfully")
+		// 	prevCounter = ctrAttestation.Counter
+		// } else {
+		// 	log.Errorf("[dev] failure: attestation has an invalid signature")
+		// 	return nil, nil, nil, fmt.Errorf("[dev] attestation has an invalid signature")
+		// }
 		// save the index upto which last successful verification was done
 		// save the counter upto which last successful verification was don
 		// save the index upto which the registration history was fetched
@@ -247,12 +246,13 @@ func getCommitmentsOpenings(uoResp *pb.UserOpeningResponse) ([]*bls.G1,
 		opening = append(opening, g1)
 	}
 
-	attestation := attestationFromProto(uoResp.GetCounterAttestation())
+	// attestation := attestationFromProto(uoResp.GetCounterAttestation())
 
 	proof := &bls.G1{}
 	proof.SetBytes(uoResp.GetProof().GetPoint())
 
-	return commitments, opening, attestation, proof
+	// return commitments, opening, attestation, proof
+	return commitments, opening, nil, proof
 }
 
 func (c *KCClient) RegisterUser(user *rbe.User, rbeId *security.RbeId) ([]*bls.G1,
@@ -285,24 +285,24 @@ func (c *KCClient) RegisterUser(user *rbe.User, rbeId *security.RbeId) ([]*bls.G
 		log.Errorf("[dev] err on RegisterUser(): %v", err)
 		return nil, nil, nil, err
 	}
-	commitments, opening, ctrAttestation, proof := getCommitmentsOpenings(regR)
-	regMsg, err := proto.Marshal(regReq)
+	commitments, opening, _, proof := getCommitmentsOpenings(regR)
+	_, err = proto.Marshal(regReq)
 	if err != nil {
 		log.Errorf("[dev] error marshalling register request: %v", err)
 	}
 
-	if trincutil.DoVerifyCounter(regMsg, ctrAttestation) {
-		log.Infof("[dev] attestation verified successfully")
+	// if trincutil.DoVerifyCounter(regMsg, ctrAttestation) {
+	// 	log.Infof("[dev] attestation verified successfully")
 
-		// save the current attestation
-		err = ctrAttestation.ToFile(CTR_ATTESTATION_PATH)
-		if err != nil {
-			log.Errorf("[dev] error saving attestation: %v", err)
-		}
-	} else {
-		log.Errorf("[dev] failure: attestation has an invalid signature")
-		return nil, nil, nil, fmt.Errorf("[dev] attestation has an invalid signature")
-	}
+	// 	// save the current attestation
+	// 	err = ctrAttestation.ToFile(CTR_ATTESTATION_PATH)
+	// 	if err != nil {
+	// 		log.Errorf("[dev] error saving attestation: %v", err)
+	// 	}
+	// } else {
+	// 	log.Errorf("[dev] failure: attestation has an invalid signature")
+	// 	return nil, nil, nil, fmt.Errorf("[dev] attestation has an invalid signature")
+	// }
 
 	return commitments, opening, proof, nil
 }
