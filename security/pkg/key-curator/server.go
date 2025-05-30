@@ -458,11 +458,23 @@ func (kcs *KeyCuratorServer) RegisterUser(_ context.Context, in *pb.RegisterRequ
 	// rethink the check for registered user ids
 	_, registered := kcs.registeredIds[id]
 	if registered {
+		// sending back the already registered users' opening and commitments
 		log.Warnf("[dev] user with id %d is already registered", id)
-		return &pb.UserOpeningResponse{
-			Opening:     []*proto.G1{},
-			Commitments: []*proto.G1{},
-		}, fmt.Errorf("user with id %d is already registered", id)
+
+		opening := []*proto.G1{}
+		for _, v := range kcs.kc.UserOpenings[id] {
+			opening = append(opening, &proto.G1{Point: v.Bytes()})
+		}
+
+		commitments := []*proto.G1{}
+		for _, v := range kcs.kc.PP.Commitments {
+			commitments = append(commitments, &proto.G1{Point: v.Bytes()})
+		}
+		return &pb.UserOpeningResponse{Opening: opening, Commitments: commitments}, nil
+		// return &pb.UserOpeningResponse{
+		// 	Opening:     []*proto.G1{},
+		// 	Commitments: []*proto.G1{},
+		// }, fmt.Errorf("user with id %d is already registered", id)
 	}
 
 	userReq := UserRequest{
