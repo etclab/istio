@@ -1,5 +1,5 @@
 #!/bin/bash 
-
+# export GOTOOLCHAIN=auto
 make DEBUG=1 docker.proxyv2
 make push.docker.proxyv2
 

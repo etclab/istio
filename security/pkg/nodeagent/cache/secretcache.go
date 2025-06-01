@@ -504,6 +504,11 @@ func (sc *SecretManagerClient) UpdateUserOpenings() {
 		sc.RegisterPodValidityMap(podsValidity)
 	} else {
 		log.Infof("[dev] no cached rbe secret\n")
+		log.Infof("[dev] writing an empty file so that envoy doesn't crash\n")
+		err := os.WriteFile("/etc/istio/proxy/pod_validity_data.json", []byte{}, 0644)
+		if err != nil {
+			log.Errorf("[dev] err on WriteFile: %v", err)
+		}
 	}
 
 	// fetch updates once new nodes register with key curator (or k8s)
