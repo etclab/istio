@@ -49,6 +49,7 @@ import (
 // in this map, then delta calculation is triggered.
 var deltaConfigTypes = sets.New(kind.ServiceEntry.String(), kind.DestinationRule.String())
 
+// okay this is where clusters build start
 // BuildClusters returns the list of clusters for the given proxy. This is the CDS output
 // For outbound: Cluster for each service/subset hostname or cidr with SNI set to service hostname
 // Cluster type based on resolution
@@ -207,18 +208,31 @@ func (configgen *ConfigGeneratorImpl) deltaFromDestinationRules(updatedDr model.
 	return services, deletedClusters
 }
 
+// where does the services come from?
 // buildClusters builds clusters for the proxy with the services passed.
 func (configgen *ConfigGeneratorImpl) buildClusters(proxy *model.Proxy, req *model.PushRequest,
 	services []*model.Service,
 ) ([]*discovery.Resource, model.XdsLogDetails) {
 	clusters := make([]*cluster.Cluster, 0)
 	resources := model.Resources{}
+	// huh what are these patches for? probably these are something we can modify?
 	envoyFilterPatches := req.Push.EnvoyFilters(proxy)
 	cb := NewClusterBuilder(proxy, req, configgen.Cache)
 	instances := proxy.ServiceTargets
 	cacheStats := cacheStats{}
 	switch proxy.Type {
 	case model.SidecarProxy:
+		log.Infof("[dev] let's see what envoy filters patches are here %v", envoyFilterPatches)
+		log.Infof("[dev] cluster builder as well %+v", cb)
+		// okay here we create clusters for sidecar proxy
+		// let's see what the proxy looks like
+		log.Infof("[dev] proxy: id %v, %v, %v", proxy.ID, proxy.DNSDomain, proxy.IPAddresses)
+		log.Infof("[dev] services here are")
+		for _, svc := range services {
+			log.Infof("[dev] service key: %v, service accounts: %v", svc.Key(), svc.ServiceAccounts)
+			log.Infof("[dev] service attributes %+v", svc.Attributes)
+		}
+		// what's the difference between outbound and inbound clusters??
 		// Setup outbound clusters
 		outboundPatcher := clusterPatcher{efw: envoyFilterPatches, pctx: networking.EnvoyFilter_SIDECAR_OUTBOUND}
 		ob, cs := configgen.buildOutboundClusters(cb, proxy, outboundPatcher, services)
@@ -228,6 +242,8 @@ func (configgen *ConfigGeneratorImpl) buildClusters(proxy *model.Proxy, req *mod
 		clusters = outboundPatcher.conditionallyAppend(clusters, nil, cb.buildBlackHoleCluster(), cb.buildDefaultPassthroughCluster())
 		clusters = append(clusters, outboundPatcher.insertedClusters()...)
 		// Setup inbound clusters
+		// guess: inbound clusters allow envoy to route traffic to the pod-local service instances
+		// guess: outbound clusters allow envoy to route traffic to the external services
 		inboundPatcher := clusterPatcher{efw: envoyFilterPatches, pctx: networking.EnvoyFilter_SIDECAR_INBOUND}
 		clusters = append(clusters, configgen.buildInboundClusters(cb, proxy, instances, inboundPatcher)...)
 		if proxy.EnableHBONEListen() {
@@ -270,6 +286,7 @@ func (configgen *ConfigGeneratorImpl) buildClusters(proxy *model.Proxy, req *mod
 	if proxy.Metadata != nil && proxy.Metadata.Raw[security.CredentialMetaDataName] == "true" {
 		clusters = append(clusters, cb.buildExternalSDSCluster(security.CredentialNameSocketPath))
 	}
+	// log.Infof("[dev] what are these resources: %+v", resources)
 	for _, c := range clusters {
 		resources = append(resources, &discovery.Resource{Name: c.Name, Resource: protoconv.MessageToAny(c)})
 	}
@@ -738,7 +755,7 @@ type buildClusterOpts struct {
 	serviceRegistry provider.ID
 	// Indicates if the destinationRule has a workloadSelector
 	isDrWithSelector      bool
-	credentialSocketExist bool
+	credentialSocketExist bool // when is it set to true
 }
 
 func applyTCPKeepalive(mesh *meshconfig.MeshConfig, c *cluster.Cluster, tcp *networking.ConnectionPoolSettings_TCPSettings) {

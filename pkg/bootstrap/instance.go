@@ -33,11 +33,11 @@ import (
 const (
 	// EnvoyFileTemplate is a template for the root config JSON
 	EnvoyFileTemplate = "envoy-rev.%s"
-	DefaultCfgDir     = "./var/lib/istio/envoy/envoy_bootstrap_tmpl.json"
+	DefaultCfgDir     = "./var/lib/istio/envoy/envoy_bootstrap_tmpl.json" // <-- default enovy bootstrap file
 )
 
 // TODO(nmittler): Move this to application code. This shouldn't be declared in a library.
-var overrideVar = env.Register("ISTIO_BOOTSTRAP", "", "")
+var overrideVar = env.Register("ISTIO_BOOTSTRAP", "", "") // TODO: where is this defined?
 
 // Instance of a configured Envoy bootstrap writer.
 type Instance interface {

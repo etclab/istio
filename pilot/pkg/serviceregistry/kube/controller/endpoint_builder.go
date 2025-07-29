@@ -48,6 +48,7 @@ type EndpointBuilder struct {
 	nodeName string
 }
 
+// mark
 func (c *Controller) NewEndpointBuilder(pod *v1.Pod) *EndpointBuilder {
 	var locality, sa, namespace, hostname, subdomain, ip, node string
 	var podLabels labels.Instance

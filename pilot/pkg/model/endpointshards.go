@@ -65,7 +65,7 @@ type EndpointShards struct {
 
 	// ServiceAccounts has the concatenation of all service accounts seen so far in endpoints.
 	// This is updated on push, based on shards. If the previous list is different than
-	// current list, a full push will be forced, to trigger a secure naming update.
+	// current list, a full push will be forced, to trigger a secure naming update. --> okay secure naming here
 	// Due to the larger time, it is still possible that connection errors will occur while
 	// CDS is updated.
 	ServiceAccounts sets.String
@@ -268,6 +268,8 @@ const (
 // UpdateServiceEndpoints updates EndpointShards data by clusterID, hostname, IstioEndpoints.
 // It also tracks the changes to ServiceAccounts. It returns whether endpoints need to be pushed and
 // it also returns if they need to be pushed whether a full push is needed or incremental push is sufficient.
+// mark: who calls this function?
+// check if endopoints need to be pushed to envoy -- okay
 func (e *EndpointIndex) UpdateServiceEndpoints(
 	shard ShardKey,
 	hostname string,
@@ -289,6 +291,7 @@ func (e *EndpointIndex) UpdateServiceEndpoints(
 	ep, created := e.GetOrCreateEndpointShard(hostname, namespace)
 	// If we create a new endpoint shard, that means we have not seen the service earlier. We should do a full push.
 	if created {
+		// here on newly created services
 		log.Infof("Full push, new service %s/%s", namespace, hostname)
 		pushType = FullPush
 	}

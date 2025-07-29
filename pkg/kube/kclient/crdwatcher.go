@@ -47,6 +47,7 @@ func init() {
 	kube.NewCrdWatcher = newCrdWatcher
 }
 
+// mark
 // newCrdWatcher returns a new CRD watcher controller.
 func newCrdWatcher(client kube.Client) kubetypes.CrdWatcher {
 	c := &crdWatcher{

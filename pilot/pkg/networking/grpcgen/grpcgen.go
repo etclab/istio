@@ -66,6 +66,7 @@ func (g *GrpcConfigGenerator) Generate(proxy *model.Proxy, w *model.WatchedResou
 	return nil, model.DefaultXdsLogDetails, nil
 }
 
+// mark here
 // buildCommonTLSContext creates a TLS context that assumes 'default' name, and credentials/tls/certprovider/pemfile
 // (see grpc/xds/internal/client/xds.go securityConfigFromCluster).
 func buildCommonTLSContext(sans []string) *tls.CommonTlsContext {

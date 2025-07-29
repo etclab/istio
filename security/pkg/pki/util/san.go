@@ -72,7 +72,9 @@ type Identity struct {
 	Value []byte
 }
 
+// mark
 // BuildSubjectAltNameExtension builds the SAN extension for the certificate.
+// okay builds this out of host string
 func BuildSubjectAltNameExtension(hosts string) (*pkix.Extension, error) {
 	ids := []Identity{}
 	for _, host := range strings.Split(hosts, ",") {
@@ -85,6 +87,7 @@ func BuildSubjectAltNameExtension(hosts string) (*pkix.Extension, error) {
 			}
 			ids = append(ids, Identity{Type: TypeIP, Value: ip})
 		} else if strings.HasPrefix(host, spiffe.URIPrefix) {
+			// it's a spiffe url
 			ids = append(ids, Identity{Type: TypeURI, Value: []byte(host)})
 		} else {
 			ids = append(ids, Identity{Type: TypeDNS, Value: []byte(host)})
@@ -99,6 +102,7 @@ func BuildSubjectAltNameExtension(hosts string) (*pkix.Extension, error) {
 	return san, nil
 }
 
+// mark
 // BuildSANExtension builds a `pkix.Extension` of type "Subject
 // Alternative Name" based on the given identities.
 func BuildSANExtension(identites []Identity) (*pkix.Extension, error) {

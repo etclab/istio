@@ -58,11 +58,16 @@ func NewSecurityOptions(proxyConfig *meshconfig.ProxyConfig, stsPort int, tokenM
 		RootCertFilePath:                     security.DefaultRootCertFilePath,
 	}
 
+	log.Infof("[dev] security options before %+v", o)
+
+	// o has imp security paths, and files configured <--
 	o, err := SetupSecurityOptions(proxyConfig, o, jwtPolicy.Get(),
 		credFetcherTypeEnv, credIdentityProvider)
 	if err != nil {
 		return o, err
 	}
+
+	log.Infof("[dev] security options after %+v", o)
 
 	return o, err
 }

@@ -40,6 +40,9 @@ var activeConnectionCheckDelay = 1 * time.Second
 func NewAgent(proxy Proxy, terminationDrainDuration, minDrainDuration time.Duration, localhost string,
 	adminPort, statusPort, prometheusPort int, exitOnZeroActiveConnections bool,
 ) *Agent {
+	// but this is envoy agent not the ip address of node
+	log.Infof("[dev] NewAgent(proxy, localhost) = (%+v, %s, %d)\n", proxy, localhost, adminPort)
+
 	knownIstioListeners := sets.New(
 		fmt.Sprintf("listener.0.0.0.0_%d.downstream_cx_active", statusPort),
 		fmt.Sprintf("listener.0.0.0.0_%d.downstream_cx_active", prometheusPort),
@@ -91,7 +94,7 @@ type Agent struct {
 	adminPort int
 	localhost string
 
-	knownIstioListeners sets.String
+	knownIstioListeners sets.String // mark var | what are these listeners?
 
 	exitOnZeroActiveConnections bool
 
@@ -114,7 +117,8 @@ type exitStatus struct {
 //     If somehow we do not shutdown from the SIGTERM fast enough, we may get a SIGKILL later.
 func (a *Agent) Run(ctx context.Context) {
 	log.Info("Starting proxy agent")
-	go a.runWait(a.abortCh)
+	go a.runWait(a.abortCh) // mark function
+	// what is the startup command?
 
 	select {
 	case status := <-a.statusCh:

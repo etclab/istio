@@ -33,6 +33,7 @@ const (
 )
 
 // Server is the gPRC server that exposes SDS through UDS.
+// what is UDS? -> unix domain socket
 type Server struct {
 	workloadSds *sdsservice
 
@@ -43,10 +44,12 @@ type Server struct {
 }
 
 // NewServer creates and starts the Grpc server for SDS.
+// okay who creates this NewServer?
 func NewServer(options *security.Options, workloadSecretCache security.SecretManager, pkpConf *mesh.PrivateKeyProvider) *Server {
 	log.Infof("[dev] lets see what comes in to NewServer() %+v, %+v & %+v", options, workloadSecretCache, pkpConf)
 
 	s := &Server{stopped: atomic.NewBool(false)}
+	// create the secrets if necessary, setup the struct
 	s.workloadSds = newSDSService(workloadSecretCache, options, pkpConf)
 	s.initWorkloadSdsService()
 	return s
@@ -78,9 +81,12 @@ func (s *Server) Stop() {
 	}
 }
 
+// okay what does initialization look like?
 func (s *Server) initWorkloadSdsService() {
 	s.grpcWorkloadServer = grpc.NewServer(s.grpcServerOptions()...)
+	// workload sds fetches secrets for the workload
 	s.workloadSds.register(s.grpcWorkloadServer)
+
 	var err error
 	s.grpcWorkloadListener, err = uds.NewListener(security.GetIstioSDSServerSocketPath())
 	go func() {
@@ -101,6 +107,8 @@ func (s *Server) initWorkloadSdsService() {
 			}
 			if s.grpcWorkloadListener != nil {
 				sdsServiceLog.Infof("Starting SDS server for workload certificates, will listen on %q", security.GetIstioSDSServerSocketPath())
+				// listener listens for requests to sds server
+				// workload sds service handles the requests
 				if err = s.grpcWorkloadServer.Serve(s.grpcWorkloadListener); err != nil {
 					sdsServiceLog.Errorf("SDS grpc server for workload proxies failed to start: %v", err)
 					serverOk = false

@@ -49,7 +49,7 @@ func DefaultProxyConfig() *meshconfig.ProxyConfig {
 		DiscoveryAddress:         "istiod.istio-system.svc:15012",
 
 		// Code defaults
-		BinaryPath:     constants.BinaryPathFilename,
+		BinaryPath:     constants.BinaryPathFilename, // envoy binary here
 		StatNameLength: 189,
 		StatusPort:     15020,
 	}

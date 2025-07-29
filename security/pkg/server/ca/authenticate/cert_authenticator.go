@@ -30,6 +30,7 @@ const (
 	ClientCertAuthenticatorType = "ClientCertAuthenticator"
 )
 
+// how does client get the cert initially?
 // ClientCertAuthenticator extracts identities from client certificate.
 type ClientCertAuthenticator struct{}
 
@@ -39,10 +40,12 @@ func (cca *ClientCertAuthenticator) AuthenticatorType() string {
 	return ClientCertAuthenticatorType
 }
 
+// mark
 // Authenticate extracts identities from presented client certificates. This
 // method assumes that certificate chain has been properly validated before
 // this method is called. In other words, this method does not do certificate
 // chain validation itself.
+// who does the validation then?
 func (cca *ClientCertAuthenticator) Authenticate(authCtx security.AuthContext) (*security.Caller, error) {
 	if authCtx.GrpcContext != nil {
 		return cca.authenticateGrpc(authCtx.GrpcContext)
@@ -63,7 +66,10 @@ func (cca *ClientCertAuthenticator) authenticateGrpc(ctx context.Context) (*secu
 		return nil, fmt.Errorf("unsupported auth type: %q", authType)
 	}
 
+	// auth info for a TLS authenticated connection
 	tlsInfo := peer.AuthInfo.(credentials.TLSInfo)
+	// okay is this handled somehow?
+	// verified by crypto/tls package and added to the VerfiiedChains
 	chains := tlsInfo.State.VerifiedChains
 	if len(chains) == 0 || len(chains[0]) == 0 {
 		return nil, fmt.Errorf("no verified chain is found")

@@ -318,11 +318,16 @@ func (c outboundListenerConflict) addMetric(metrics model.Metrics) {
 			c.newHostname))
 }
 
+// mark is this it?
 // buildSidecarOutboundListeners generates http and tcp listeners for
 // outbound connections from the proxy based on the sidecar scope associated with the proxy.
 func (lb *ListenerBuilder) buildSidecarOutboundListeners(node *model.Proxy,
 	push *model.PushContext,
 ) []*listener.Listener {
+	log.Infof("[dev] inside buildSidecarOutboundListeners")
+	// log.Infof("[dev] node %+v", node)
+	// log.Infof("[dev] push context %+v", push)
+
 	proxyNoneMode := node.GetInterceptionMode() == model.InterceptionNone
 
 	actualWildcards, actualLocalHosts := getWildcardsAndLocalHost(node.GetIPMode())

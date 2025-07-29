@@ -52,6 +52,7 @@ func NewMulticlusterNodeAuthenticator(
 }
 
 func (m *MulticlusterNodeAuthorizor) authenticateImpersonation(ctx context.Context, caller security.KubernetesInfo, requestedIdentityString string) error {
+	// very little idea what node authentification is
 	clusterID := kubeauth.ExtractClusterID(ctx)
 	na := m.component.ForCluster(clusterID)
 	if na == nil {

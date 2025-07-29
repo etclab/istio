@@ -22,6 +22,7 @@ import (
 	meshconfig "istio.io/api/mesh/v1alpha1"
 	"istio.io/istio/pkg/bootstrap/platform"
 	istioagent "istio.io/istio/pkg/istio-agent"
+	"istio.io/istio/pkg/log"
 	"istio.io/istio/pkg/util/sets"
 	"istio.io/istio/pkg/wasm"
 )
@@ -71,6 +72,8 @@ func NewAgentOptions(proxy *ProxyArgs, cfg *meshconfig.ProxyConfig, sds istioage
 		SDSFactory:                  sds,
 		WorkloadIdentitySocketFile:  workloadIdentitySocketFile,
 	}
+
+	log.Infof("[dev] agent options %+v", o)
 	extractXDSHeadersFromEnv(o)
 	return o
 }

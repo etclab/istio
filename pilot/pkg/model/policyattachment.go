@@ -35,7 +35,7 @@ type TargetablePolicy interface {
 }
 
 // WorkloadPolicyMatcher performs policy selection either using targetRef or label selectors.
-// Label selection uses the workload labels.
+// Label selection uses the workload labels. // -l app=details
 // TargetRef selection uses either the workload's namespace + the gateway name based on labels,
 // or the Services the workload is a part of.
 type WorkloadPolicyMatcher struct {

@@ -86,6 +86,7 @@ func NewEnvironment() *Environment {
 	} else {
 		cache = DisabledCache{}
 	}
+	// okay how are these context, cache, and index updated?
 	return &Environment{
 		pushContext:   NewPushContext(),
 		Cache:         cache,

@@ -30,6 +30,7 @@ import (
 // MutualTLSMode is the mutual TLS mode specified by authentication policy.
 type MutualTLSMode int
 
+// mark: pilot auth methods
 const (
 	// MTLSUnknown is used to indicate the variable hasn't been initialized correctly (with the authentication policy).
 	MTLSUnknown MutualTLSMode = iota
@@ -202,6 +203,7 @@ func (policy *AuthenticationPolicies) GetJwtPoliciesForWorkload(policyMatcher Wo
 	return getConfigsForWorkload(policy.rootNamespace, policy.requestAuthentications, policyMatcher)
 }
 
+// is this used by proxies?
 // GetPeerAuthenticationsForWorkload returns a list of peer authentication policies matching to labels.
 func (policy *AuthenticationPolicies) GetPeerAuthenticationsForWorkload(policyMatcher WorkloadPolicyMatcher) []*config.Config {
 	return getConfigsForWorkload(policy.rootNamespace, policy.peerAuthentications, policyMatcher)
@@ -226,6 +228,7 @@ func GetAmbientPolicyConfigName(key ConfigKey) string {
 	}
 }
 
+// mark okay
 func getConfigsForWorkload(rootNamespace string, configsByNamespace map[string][]config.Config, selectionOpts WorkloadPolicyMatcher) []*config.Config {
 	workloadLabels := selectionOpts.WorkloadLabels
 	namespace := selectionOpts.WorkloadNamespace

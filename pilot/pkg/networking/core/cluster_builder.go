@@ -128,6 +128,7 @@ func NewClusterBuilder(proxy *model.Proxy, req *model.PushRequest, cache model.X
 	}
 	if proxy.Metadata != nil {
 		if proxy.Metadata.TLSClientCertChain != "" {
+			// these are metadata certs not worklaod certs
 			cb.metadataCerts = &metadataCerts{
 				tlsClientCertChain: proxy.Metadata.TLSClientCertChain,
 				tlsClientKey:       proxy.Metadata.TLSClientKey,

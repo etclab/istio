@@ -36,6 +36,7 @@ import (
 // ConstructProxyConfig returns proxyConfig
 func ConstructProxyConfig(meshConfigFile, serviceCluster, proxyConfigEnv string, concurrency int) (*meshconfig.ProxyConfig, error) {
 	annotations, err := bootstrap.ReadPodAnnotations("")
+	log.Infof("[dev] pod annotations: %+v", annotations)
 	if err != nil {
 		if os.IsNotExist(err) {
 			log.Debugf("failed to read pod annotations: %v", err)

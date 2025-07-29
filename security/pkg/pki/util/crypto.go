@@ -49,6 +49,7 @@ func ParsePemEncodedCertificate(certBytes []byte) (*x509.Certificate, error) {
 	return cert, nil
 }
 
+// mark
 // ParsePemEncodedCertificateChain constructs a slice of `x509.Certificate` and `rootCertBytes`
 // objects using the given a PEM-encoded certificate chain.
 func ParsePemEncodedCertificateChain(certBytes []byte) ([]*x509.Certificate, []byte, error) {
@@ -59,7 +60,7 @@ func ParsePemEncodedCertificateChain(certBytes []byte) ([]*x509.Certificate, []b
 	)
 	certBytes = bytes.TrimSpace(certBytes)
 	for {
-		rootCertBytes = certBytes
+		rootCertBytes = certBytes // root cert is at the end?
 		cb, certBytes = pem.Decode(certBytes)
 		if cb == nil {
 			return nil, nil, fmt.Errorf("invalid PEM encoded certificate")
@@ -155,6 +156,7 @@ func PemCertBytestoString(caCerts []byte) []string {
 	certs := []string{}
 	var cert string
 	pemBlock := caCerts
+	// Decode finds the next PEM block okay
 	for block, rest := pem.Decode(pemBlock); block != nil && len(block.Bytes) != 0; block, rest = pem.Decode(pemBlock) {
 		if len(rest) == 0 {
 			cert = strings.TrimPrefix(strings.TrimSuffix(string(pemBlock), "\n"), "\n")

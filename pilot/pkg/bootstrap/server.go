@@ -1253,6 +1253,7 @@ func (s *Server) startKeyCurator() {
 		s.keyCuratorServer = keycurator.NewKeyCuratorServer(constants.MaxUsers)
 	}
 
+	// TODO: let's try using secure grpc for key curator
 	s.addStartFunc("key-curator", func(stop <-chan struct{}) error {
 		grpcServer := s.secureGrpcServer
 		if s.secureGrpcServer == nil {

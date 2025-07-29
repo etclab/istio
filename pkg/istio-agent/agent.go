@@ -321,6 +321,10 @@ func (a *Agent) initializeEnvoyAgent(_ context.Context) error {
 		if err != nil {
 			return fmt.Errorf("failed to generate bootstrap config: %v", err)
 		}
+		// out = etc/istio/proxy/envoy-rev.json
+		log.Infof("[dev] envoy config file is stored at: %s", out)
+		// what kind of config is this? and why does it need to be saved somewhere?
+		// what exactly is in this file?
 		a.envoyOpts.ConfigPath = out
 		a.envoyOpts.ConfigCleanup = true
 	}
@@ -337,7 +341,7 @@ func (a *Agent) initializeEnvoyAgent(_ context.Context) error {
 	// used.
 	a.envoyOpts.AgentIsRoot = os.Getuid() == 0 && strings.HasSuffix(a.cfg.DNSAddr, ":53")
 
-	envoyProxy := envoy.NewProxy(a.envoyOpts)
+	envoyProxy := envoy.NewProxy(a.envoyOpts) // mark function
 
 	drainDuration := a.proxyConfig.TerminationDrainDuration.AsDuration()
 	localHostAddr := localHostIPv4
@@ -382,6 +386,7 @@ func (a *Agent) Run(ctx context.Context) (func(), error) {
 	// 4. if they are not different, start the Istio default SDS server and use it.
 
 	// Correctness check - we do not want people sneaking paths into this
+	// identity socket file will serve envoy the secrets?
 	if a.cfg.WorkloadIdentitySocketFile != filepath.Base(a.cfg.WorkloadIdentitySocketFile) {
 		return nil, fmt.Errorf("workload identity socket file override must be a filename, not a path: %s", a.cfg.WorkloadIdentitySocketFile)
 	}
@@ -438,7 +443,7 @@ func (a *Agent) Run(ctx context.Context) (func(), error) {
 		})
 	}
 
-	if !a.EnvoyDisabled() {
+	if !a.EnvoyDisabled() { // envoy starts here <--
 		err = a.initializeEnvoyAgent(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize envoy agent: %v", err)

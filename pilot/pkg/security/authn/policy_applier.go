@@ -424,6 +424,7 @@ type MergedPeerAuthentication struct {
 	PerPort map[uint32]model.MutualTLSMode
 }
 
+// this should convert mtls configs to envoy filter?
 // ComposePeerAuthentication returns the effective PeerAuthentication given the list of applicable
 // configs. This list should contains at most 1 mesh-level and 1 namespace-level configs.
 // Workload-level configs should not be in root namespace (this should be guaranteed by the caller,

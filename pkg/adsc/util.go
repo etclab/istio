@@ -23,6 +23,7 @@ import (
 	"istio.io/istio/pkg/security"
 )
 
+// who calls this?
 func getClientCertFn(config *Config) func(requestInfo *tls.CertificateRequestInfo) (*tls.Certificate, error) {
 	if config.SecretManager != nil {
 		return func(requestInfo *tls.CertificateRequestInfo) (*tls.Certificate, error) {

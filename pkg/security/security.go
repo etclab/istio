@@ -276,6 +276,7 @@ type Options struct {
 // The Agent will create a key pair and a CSR, and use an implementation of this
 // interface to get back a signed certificate. There is no guarantee that the SAN
 // in the request will be returned - server may replace it.
+// mark
 type Client interface {
 	CSRSign(csrPEM []byte, certValidTTLInSec int64) ([]string, error)
 	Close()
@@ -297,15 +298,22 @@ type RBESecretManager interface {
 
 // SecretManager defines secrets management interface which is used by SDS.
 type SecretManager interface {
+	// what exactly is a secret here?
+	// where does the token come from? -- okay jwt has the sub claim (the subject field)
+	// what is k8s format jwt token?
 	// GenerateSecret generates new secret for the given resource.
 	//
 	// The current implementation also watched the generated secret and trigger a callback when it is
 	// near expiry. It will constructs the SAN based on the token's 'sub' claim, expected to be in
 	// the K8S format. No other JWTs are currently supported due to client logic. If JWT is
 	// missing/invalid, the resourceName is used.
+
+	// where is this implemented
 	GenerateSecret(resourceName string) (*SecretItem, error)
 }
 
+// neat
+// who handles the secret store? is there only one secret store and everyone envoy connects to this?
 // SecretItem is the cached item in in-memory secret store.
 type SecretItem struct {
 	CertificateChain []byte
@@ -313,6 +321,8 @@ type SecretItem struct {
 
 	RootCert []byte
 
+	// mark
+	// okay envoy requests these certificates from SDS
 	// ResourceName passed from envoy SDS discovery request.
 	// "ROOTCA" for root cert request, "default" for key/cert request.
 	ResourceName string
@@ -567,9 +577,11 @@ func GetWorkloadSDSSocketListenPath(sockfile string) string {
 	return filepath.Join(WorkloadIdentityPath, sockfile)
 }
 
+// okay
 // This is the fixed-path, fixed-filename location where Istio's default SDS workload identity server
 // will put its socket.
 func GetIstioSDSServerSocketPath() string {
+	// okay how does it use the UDS
 	return filepath.Join(WorkloadIdentityPath, DefaultWorkloadIdentitySocketFile)
 }
 
