@@ -160,7 +160,7 @@ func (c *KCClient) FetchAllUpdates() ([]*bls.G1, [][]*bls.G1, []*security.RbeId,
 	return commitments, openings, allRbeIds, nil
 }
 
-func (c *KCClient) FetchUpdate(id int32) ([]*bls.G1, []*bls.G1, error) {
+func (c *KCClient) FetchUpdate(id int64) ([]*bls.G1, []*bls.G1, error) {
 	updReq := &pb.UpdateRequest{
 		Id: id,
 	}
@@ -211,7 +211,7 @@ func (c *KCClient) RegisterUser(user *rbe.User, rbeId *security.RbeId) ([]*bls.G
 
 	id := rbeId.ToNumber()
 	regReq := &pb.RegisterRequest{
-		Id:        int32(id),
+		Id:        int64(id),
 		PublicKey: &rbeproto.G1{Point: user.PublicKey().Bytes()},
 		Xi:        xiProto,
 		Ip:        rbeId.Ip,

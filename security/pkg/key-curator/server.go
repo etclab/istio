@@ -49,9 +49,10 @@ type KeyCuratorServer struct {
 	kc *rbe.KeyCurator
 	pp *rbe.PublicParams
 
-	history       []*RegistrationEvent
-	EtcdClient    *clientv3.Client
-	registeredIds map[int]bool // used to track registered user ids
+	history              []*RegistrationEvent
+	EtcdClient           *clientv3.Client
+	registeredIds        map[int]bool // used to track registered user ids
+	registrationResponse map[int]*pb.UserOpeningResponse
 
 	registrationQueue chan UserRequest
 
@@ -382,7 +383,7 @@ func (kcs *KeyCuratorServer) FetchAllUpdates(_ context.Context, in *emptypb.Empt
 			Token:     v.token,
 			Ip:        v.ip,
 			Port:      v.port,
-			Id:        int32(v.id),
+			Id:        int64(v.id),
 			PublicKey: &proto.G1{Point: v.publicKey.Bytes()},
 			Xi:        xiProto,
 		})
@@ -458,11 +459,12 @@ func (kcs *KeyCuratorServer) RegisterUser(_ context.Context, in *pb.RegisterRequ
 	// rethink the check for registered user ids
 	_, registered := kcs.registeredIds[id]
 	if registered {
-		log.Warnf("[dev] user with id %d is already registered", id)
-		return &pb.UserOpeningResponse{
-			Opening:     []*proto.G1{},
-			Commitments: []*proto.G1{},
-		}, fmt.Errorf("user with id %d is already registered", id)
+		log.Warnf("[dev] user with id %d is already registered, returning cached response", id)
+		// return &pb.UserOpeningResponse{
+		// 	Opening:     []*proto.G1{},
+		// 	Commitments: []*proto.G1{},
+		// }, fmt.Errorf("user with id %d is already registered", id)
+		return kcs.registrationResponse[id], nil
 	}
 
 	userReq := UserRequest{
@@ -480,6 +482,12 @@ func (kcs *KeyCuratorServer) RegisterUser(_ context.Context, in *pb.RegisterRequ
 		errMsg := fmt.Errorf("[dev] error registering user %d from api", id)
 		log.Errorf(errMsg.Error())
 		return nil, errMsg
+	} else {
+		if kcs.registrationResponse == nil {
+			kcs.registrationResponse = make(map[int]*pb.UserOpeningResponse)
+		}
+		log.Infof("[dev] caching registration response for user %d", id)
+		kcs.registrationResponse[id] = userOpeningResp
 	}
 	log.Infof("[dev] registered user %d from api", id)
 

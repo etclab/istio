@@ -214,5 +214,8 @@ const (
 	EnableV2AutoAllocationLabel = "networking.istio.io/enable-autoallocate-ip"
 
 	// Max users for the key curator
-	MaxUsers = 65535
+	// MaxUsers = 2147483647
+	// MaxUsers = 65536 // 2^16
+	// MaxUsers = 262144 // 2^18
+	MaxUsers = 1048576 // 2^20
 )

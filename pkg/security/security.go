@@ -287,7 +287,7 @@ type KeyCuratorClient interface {
 	Close()
 	FetchPublicParams() (*rbe.PublicParams, error)
 	RegisterUser(*rbe.User, *RbeId) ([]*bls.G1, []*bls.G1, error)
-	FetchUpdate(int32) ([]*bls.G1, []*bls.G1, error)
+	FetchUpdate(int64) ([]*bls.G1, []*bls.G1, error)
 	FetchAllUpdates() ([]*bls.G1, [][]*bls.G1, []*RbeId, error)
 }
 
@@ -330,8 +330,7 @@ type RbeId struct {
 	Token      string
 }
 
-// FIXME: this doesn't need to be truncated to 16-bit number
-func (id *RbeId) SecretKey() int32 {
+func (id *RbeId) SecretKey() int64 {
 	return idStringToNumber(fmt.Sprintf("%s|%s", id.Ip, id.Token))
 }
 
@@ -339,19 +338,20 @@ func (id *RbeId) String() string {
 	return id.Token
 }
 
-func (id *RbeId) ToNumber() int32 {
+func (id *RbeId) ToNumber() int64 {
 	return idStringToNumber(id.String())
 }
 
 // convert s to 16-bit number
-func idStringToNumber(s string) int32 {
+func idStringToNumber(s string) int64 {
 	data := []byte(s)
 	hash128 := md5.Sum(data) // 128 bits
 
-	hash16 := hash128[0:2] // 16 bits
-	number := binary.BigEndian.Uint16(hash16)
-
-	return int32(number)
+	var n uint32
+	for i := 0; i < 16; i += 2 {
+		n ^= uint32(binary.BigEndian.Uint16(hash128[i : i+2]))
+	}
+	return int64(n)
 }
 
 type RbeSecretItem struct {

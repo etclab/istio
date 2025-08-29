@@ -392,7 +392,7 @@ func (sc *SecretManagerClient) UpdateUserOpenings() {
 	rbeSecret := sc.GetRbeCachedSecret(security.WorkloadRbeIdentityCertResourceName)
 
 	if rbeSecret != nil {
-		id := int32(rbeSecret.User.Id())
+		id := int64(rbeSecret.User.Id())
 
 		pp, err := sc.kcClient.FetchPublicParams()
 		if err != nil {
@@ -549,6 +549,9 @@ func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(rbeId *security.RbeId,
 		user = cachedSecret.User
 		cachedId = user.Id()
 		pp = cachedSecret.Pp
+} else {
+		// TODO: check if user and pp are stored in a well-known file location
+		log.Infof("[dev] no cached secret found, checking if user and pp are stored in a file")
 	}
 
 	id := rbeId.ToNumber()
