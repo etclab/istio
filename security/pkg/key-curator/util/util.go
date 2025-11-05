@@ -250,6 +250,5 @@ func CheckPodValidity(rbeId *security.RbeId, secret *security.RbeSecretItem) (re
 		return false
 	}
 
-	result = nonceHash.IsEqual(decryptedNonce)
-	return
+	return nonceHash.IsEqual(decryptedNonce)
 }

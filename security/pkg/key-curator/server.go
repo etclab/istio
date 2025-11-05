@@ -21,7 +21,7 @@ import (
 	gproto "google.golang.org/protobuf/proto"
 )
 
-const RBE_USER_PREFIX = "rbe-user/"
+const RBE_USER_PREFIX = "rbe-user"
 const RBE_PP_KEY = "rbe-system/pp"
 
 type RegistrationEvent struct {
@@ -60,6 +60,18 @@ type KeyCuratorServer struct {
 	Authenticators []security.Authenticator
 }
 
+func (kcs *KeyCuratorServer) ListWatchRBEUsers() {
+	currentRevision := kcs.fetchExistingUsers()
+	if currentRevision < 0 {
+		log.Errorf("Failed to fetch existing users, cannot start watch")
+		return
+	} else {
+		log.Infof("[dev] current revision is %d", currentRevision)
+	}
+
+	go kcs.watchEtcdKeys(currentRevision)
+}
+
 func (kcs *KeyCuratorServer) initEtcdWithRetry() {
 	backoff := 5 * time.Second
 	maxBackoff := 2 * time.Minute
@@ -77,8 +89,8 @@ func (kcs *KeyCuratorServer) initEtcdWithRetry() {
 
 			kcs.listenRegistrationRequests()
 
-			go kcs.watchEtcdKeys()      // Start watching in background
-			go kcs.fetchExistingUsers() // Fetch existing users from etcd
+			// get existing RBE users and then start watching for new users
+			kcs.ListWatchRBEUsers()
 			return
 		}
 
@@ -144,11 +156,11 @@ func (kcs *KeyCuratorServer) restoreSystemParams() {
 	}
 }
 
-func (kcs *KeyCuratorServer) fetchExistingUsers() {
+func (kcs *KeyCuratorServer) fetchExistingUsers() int64 {
 	getRes, err := kcs.EtcdClient.Get(context.Background(), RBE_USER_PREFIX, clientv3.WithPrefix())
 	if err != nil {
 		log.Errorf("[dev] failed to fetch existing users from etcd: %v", err)
-		return
+		return -1
 	}
 
 	log.Infof("[dev] fetched %d existing users from etcd", len(getRes.Kvs))
@@ -180,6 +192,9 @@ func (kcs *KeyCuratorServer) fetchExistingUsers() {
 			log.Infof("[dev] error unmarshalling request for user %d: %v", kv.Key, err)
 		}
 	}
+
+	log.Infof("current revision is %d", getRes.Header.Revision)
+	return getRes.Header.Revision
 }
 
 func (kcs *KeyCuratorServer) tryConnectToEtcd() error {
@@ -206,9 +221,8 @@ func (kcs *KeyCuratorServer) tryConnectToEtcd() error {
 	return nil
 }
 
-func (kcs *KeyCuratorServer) watchEtcdKeys() {
-	rch := kcs.EtcdClient.Watch(context.Background(), RBE_USER_PREFIX, clientv3.WithPrefix())
-	log.Infof("[dev] lets print the watch channel itself %+v", rch)
+func (kcs *KeyCuratorServer) watchEtcdKeys(currentRevision int64) {
+	rch := kcs.EtcdClient.Watch(context.Background(), RBE_USER_PREFIX, clientv3.WithPrefix(), clientv3.WithRev(currentRevision+1))
 	for wresp := range rch {
 		if wresp.Canceled {
 			log.Warnf("[dev] etcd watch canceled: %v", wresp.Err())
@@ -299,7 +313,7 @@ func (kcs *KeyCuratorServer) StoreAtEtcd(id int, req *pb.RegisterRequest) {
 		return
 	}
 
-	key := fmt.Sprintf("%s%d", RBE_USER_PREFIX, id)
+	key := fmt.Sprintf("%s/%d", RBE_USER_PREFIX, id)
 	value, err := gproto.Marshal(req)
 	if err != nil {
 		log.Errorf("[dev] failed to marshal request for user %d: %v", id, err)
