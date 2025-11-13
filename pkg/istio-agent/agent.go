@@ -462,7 +462,7 @@ func (a *Agent) Run(ctx context.Context) (func(), error) {
 }
 
 // this workload is a user in RBE
-// ID is first 16 bits of md5 hash of "token"
+// ID is first 16 bits of md5 hash of "token" <-- this might have changed in the code
 // save this nonce too -- this will be used for the serial RBE identity
 func (a *Agent) getRbeUserId() (*security.RbeId, error) {
 	token, err := kcUtil.GetPlatformCredential()

@@ -149,6 +149,7 @@ type Server struct {
 	CA               *ca.IstioCA
 	RA               ra.RegistrationAuthority
 	caServer         *caserver.Server
+	podName          string
 	keyCuratorServer *keycurator.KeyCuratorServer
 
 	// TrustAnchors for workload to workload mTLS // okay where is mTLS enforced
@@ -243,6 +244,7 @@ func NewServer(args *PilotArgs, initFuncs ...func(*Server)) (*Server, error) {
 		internalStop:            make(chan struct{}),
 		istiodCertBundleWatcher: keycertbundle.NewWatcher(),
 		webhookInfo:             &webhookInfo{},
+		podName:                 args.PodName,
 	}
 
 	// Apply custom initialization functions.
@@ -1250,7 +1252,8 @@ func (s *Server) shouldStartNsController() bool {
 func (s *Server) startKeyCurator() {
 	// init key curator server
 	if s.keyCuratorServer == nil {
-		s.keyCuratorServer = keycurator.NewKeyCuratorServer(constants.MaxUsers)
+		s.keyCuratorServer = keycurator.NewKeyCuratorServer(constants.MaxUsers,
+			s.podName)
 	}
 
 	s.addStartFunc("key-curator", func(stop <-chan struct{}) error {

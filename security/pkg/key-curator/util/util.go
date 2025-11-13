@@ -33,6 +33,20 @@ func GenerateNonce() (string, error) {
 	return base64.URLEncoding.EncodeToString(nonceBytes), nil
 }
 
+func GetKubeClient() (*kubernetes.Clientset, error) {
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, fmt.Errorf("[dev] failed to get in-cluster config: %v", err)
+	}
+
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("[dev] failed to create clientset: %v", err)
+	}
+
+	return clientset, nil
+}
+
 // returns the admin token
 // how do I verify the token?
 // 1) with TokenReview API -- needs TokenReview:create api permission
@@ -74,7 +88,6 @@ func VerifyServiceAccountToken(token string) error {
 	if err != nil {
 		log.Errorf("[dev] failed to create clientset: %v", err)
 		return fmt.Errorf("[dev] failed to create clientset: %v", err)
-
 	}
 
 	tokenReview := &authenticationv1.TokenReview{

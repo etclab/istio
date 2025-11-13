@@ -49,6 +49,11 @@ type KeyCuratorServer struct {
 	kc *rbe.KeyCurator
 	pp *rbe.PublicParams
 
+	// leaseId is also my pod id
+	leaseId     string
+	leaderPodId atomic.Value // string
+	isLeader    atomic.Bool
+
 	history              []*RegistrationEvent
 	EtcdClient           *clientv3.Client
 	registeredIds        map[int]bool // used to track registered user ids
@@ -332,11 +337,13 @@ func (kcs *KeyCuratorServer) StoreAtEtcd(id int, req *pb.RegisterRequest) {
 	log.Infof("[dev] stored user %d in etcd", id)
 }
 
-func NewKeyCuratorServer(maxUsers int) *KeyCuratorServer {
+func NewKeyCuratorServer(maxUsers int, podName string) *KeyCuratorServer {
 	pp := rbe.NewPublicParams(maxUsers)
 	kc := rbe.NewKeyCurator(pp)
 	history := make([]*RegistrationEvent, 0)
 	registeredIds := make(map[int]bool)
+
+	log.Infof("[dev] inside NewKeyCuratorServer with maxUsers: %d, podName: %s", maxUsers, podName)
 
 	kcServer := &KeyCuratorServer{
 		pp:            pp,
@@ -345,11 +352,62 @@ func NewKeyCuratorServer(maxUsers int) *KeyCuratorServer {
 		registeredIds: registeredIds,
 
 		registrationQueue: make(chan UserRequest, 100),
+		// pod id of istiod instance
+		leaseId: podName,
 	}
+
+	go kcServer.TryAcquireLease(kcServer.leaseId)
 
 	go kcServer.initEtcdWithRetry()
 
 	return kcServer
+}
+
+func (kcs *KeyCuratorServer) TryAcquireLease(id string) {
+	clientset, err := keycurator.GetKubeClient()
+	if err != nil {
+		log.Errorf("[dev] failed to get kube client: %v", err)
+		return
+	}
+
+	lock := &resourcelock.LeaseLock{
+		LeaseMeta: metav1.ObjectMeta{
+			Name:      "istiod-key-curator-leader",
+			Namespace: "istio-system",
+		},
+		Client: clientset.CoordinationV1(),
+		LockConfig: resourcelock.ResourceLockConfig{
+			Identity: id,
+		},
+	}
+
+	leaderelection.RunOrDie(context.Background(), leaderelection.LeaderElectionConfig{
+		Lock: lock,
+		// IMPORTANT: you MUST ensure that any code you have that
+		// is protected by the lease must terminate **before**
+		// you call cancel. Otherwise, you could have a background
+		// loop still running and another process could
+		// get elected before your background loop finished, violating
+		// the stated goal of the lease.
+		ReleaseOnCancel: true,
+		LeaseDuration:   15 * time.Second,
+		RenewDeadline:   10 * time.Second,
+		RetryPeriod:     2 * time.Second,
+		Callbacks: leaderelection.LeaderCallbacks{
+			OnStartedLeading: func(ctx context.Context) {
+				log.Infof("[dev] acquired lease: %s", id)
+				kcs.isLeader.Store(true)
+			},
+			OnStoppedLeading: func() {
+				log.Infof("[dev] lost lease: %s", id)
+				kcs.isLeader.Store(false)
+			},
+			OnNewLeader: func(leaderIdentity string) {
+				log.Infof("[dev] new leader elected with id: %s", leaderIdentity)
+				kcs.leaderPodId.Store(leaderIdentity)
+			},
+		},
+	})
 }
 
 func (kcs *KeyCuratorServer) FetchPublicParams(_ context.Context, in *emptypb.Empty) (*pb.PublicParamsResponse, error) {
@@ -461,6 +519,15 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 		// this means only this instance of istiod received this request
 		// so we need to sent it to etcd so that other instances can pick it up
 		kcs.StoreAtEtcd(id, in)
+		// save to history also stores the user info in etcd
+		kcs.SaveToHistory(id, in)
+	}
+	// send updates on every registration
+	if kcs.isLeader.Load() {
+		log.Infof("[dev] I'm the leader, updating system params in etcd")
+		kcs.UpdateSystemParamsInEtcd()
+	} else {
+		log.Infof("[dev] skip updating system params in etcd, not the leader")
 	}
 
 	return &pb.UserOpeningResponse{Opening: opening, Commitments: commitments}, nil
