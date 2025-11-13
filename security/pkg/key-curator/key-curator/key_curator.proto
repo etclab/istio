@@ -42,6 +42,22 @@ message Opening {
     repeated rbe.proto.G1 opening = 1;
 }
 
+message H1 {
+    repeated rbe.proto.G1 h1 = 1;
+}
+
+message H2 {
+    repeated rbe.proto.G2 H2 = 1;
+}
+
+message Commitments {
+    repeated rbe.proto.G1 commitments = 1;
+}
+
+message AllUserOpenings {
+    repeated Opening allOpenings = 1;
+}
+
 message AllUpdatesResponse {
     repeated rbe.proto.G1 allCommitments = 1;
     repeated Opening allOpenings = 2;

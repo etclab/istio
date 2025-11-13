@@ -6,6 +6,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	bls "github.com/cloudflare/circl/ecc/bls12381"
@@ -15,14 +16,25 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 	"istio.io/istio/pkg/log"
 	"istio.io/istio/pkg/security"
+	etcdutil "istio.io/istio/security/pkg/etcd/util"
 	pb "istio.io/istio/security/pkg/key-curator/key-curator"
+	keycurator "istio.io/istio/security/pkg/key-curator/util"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/leaderelection"
+	"k8s.io/client-go/tools/leaderelection/resourcelock"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 	gproto "google.golang.org/protobuf/proto"
+	kconstants "istio.io/istio/security/pkg/key-curator/constants"
 )
 
-const RBE_USER_PREFIX = "rbe-user"
-const RBE_PP_KEY = "rbe-system/pp"
+// for lack of a better name using the prefix "history"
+// the idea is as new services register themselves with the key curator server
+// they get added under this prefix in etcd
+// client then watch for new updates under this prefix
+// key format: history/<hash-of-token>
+// value: serialized(token,id,IP,pk,registration_proof,attest_counter)
+const HISTORY = "history"
 
 type RegistrationEvent struct {
 	token     string
@@ -115,7 +127,7 @@ func (kcs *KeyCuratorServer) initEtcdWithRetry() {
 // if there's existing public params in etcd, restore them
 // if not update the public params in etcd with the current ones
 func (kcs *KeyCuratorServer) restoreSystemParams() {
-	ppRes, err := kcs.EtcdClient.Get(context.Background(), RBE_PP_KEY)
+	ppRes, err := kcs.EtcdClient.Get(context.Background(), kconstants.RBE_PP_KEY, clientv3.WithPrefix())
 	if err != nil {
 		log.Errorf("[dev] failed to fetch public params from etcd: %v", err)
 		return
@@ -124,45 +136,130 @@ func (kcs *KeyCuratorServer) restoreSystemParams() {
 	log.Infof("[dev] fetched %d public params from etcd", len(ppRes.Kvs))
 
 	if len(ppRes.Kvs) > 0 {
-		log.Infof("[dev] found public params in etcd, restoring them")
+		pp := new(rbe.PublicParams)
 
-		record := ppRes.Kvs[0]
-		ppValue := record.Value
+		for _, kv := range ppRes.Kvs {
+			value := kv.Value
+			key := kv.Key
+			keyStr := string(key)
 
-		ppProto := &proto.PublicParams{}
-		err := gproto.Unmarshal([]byte(ppValue), ppProto)
-		if err != nil {
-			log.Errorf("[dev] failed to unmarshal public params from etcd: %v", err)
-			return
+			log.Infof("[dev] received key: %s, len(value): %d", key, len(value))
+
+			// check if key is for public params
+			if keyStr == kconstants.RBE_PP_KEY {
+				ppProto := &proto.PublicParams{}
+				err := gproto.Unmarshal([]byte(value), ppProto)
+				if err != nil {
+					log.Errorf("[dev] failed to unmarshal public params from etcd: %v", err)
+					return
+				}
+
+				ppCopy := new(rbe.PublicParams)
+				ppCopy.FromProto(ppProto)
+
+				pp.MaxUsers = ppCopy.MaxUsers
+				pp.BlockSize = ppCopy.BlockSize
+				pp.NumBlocks = ppCopy.NumBlocks
+				pp.G1 = ppCopy.G1
+				pp.G2 = ppCopy.G2
+
+				log.Infof("[dev] saved public params from etcd")
+			}
+
+			if keyStr == kconstants.RBE_PP_CRS_H1_KEY {
+				crsH1Proto := &pb.H1{}
+				err := gproto.Unmarshal([]byte(value), crsH1Proto)
+				if err != nil {
+					log.Errorf("[dev] failed to unmarshal crsH1 from etcd: %v", err)
+					return
+				}
+
+				size := len(crsH1Proto.H1)
+				h1 := make([]*bls.G1, size)
+
+				for i, v := range crsH1Proto.GetH1() {
+					if len(v.GetPoint()) == 0 {
+						h1[i] = nil
+					} else {
+						h1[i] = new(bls.G1)
+						err := h1[i].SetBytes(v.GetPoint())
+						if err != nil {
+							log.Errorf("error setting crs.H1[%d]: %v", i, err)
+						}
+					}
+				}
+
+				if pp.CRS == nil {
+					pp.CRS = new(rbe.CRS)
+				}
+				pp.CRS.H1 = h1
+			}
+
+			if keyStr == kconstants.RBE_PP_CRS_H2_KEY {
+				crsH2Proto := &pb.H2{}
+				err := gproto.Unmarshal([]byte(value), crsH2Proto)
+				if err != nil {
+					log.Errorf("[dev] failed to unmarshal crsH2 from etcd: %v", err)
+					return
+				}
+
+				size := len(crsH2Proto.H2)
+				h2 := make([]*bls.G2, size)
+
+				for i, v := range crsH2Proto.GetH2() {
+					if len(v.GetPoint()) == 0 {
+						h2[i] = nil
+					} else {
+						h2[i] = new(bls.G2)
+						err := h2[i].SetBytes(v.GetPoint())
+						if err != nil {
+							log.Errorf("error setting crs.H2[%d]: %v", i, err)
+						}
+					}
+				}
+
+				if pp.CRS == nil {
+					pp.CRS = new(rbe.CRS)
+				}
+				pp.CRS.H2 = h2
+			}
+
+			if keyStr == kconstants.RBE_PP_COMMITMENTS_KEY {
+				commitmentsProto := &pb.Commitments{}
+				err := gproto.Unmarshal([]byte(value), commitmentsProto)
+				if err != nil {
+					log.Errorf("[dev] failed to unmarshal commitments from etcd: %v", err)
+					return
+				}
+
+				commitments := make([]*bls.G1, len(commitmentsProto.Commitments))
+				for i, v := range commitmentsProto.GetCommitments() {
+					commitments[i] = new(bls.G1)
+					err = commitments[i].SetBytes(v.GetPoint())
+					if err != nil {
+						log.Errorf("error setting commitments[%d]: %v", i, err)
+					}
+				}
+
+				pp.Commitments = commitments
+			}
 		}
 
-		kcs.pp.FromProto(ppProto)
+		kcs.pp = pp
 		kcs.kc = rbe.NewKeyCurator(kcs.pp) // reinitialize KeyCurator with restored public params
 		log.Infof("[dev] restored public params from etcd")
 	} else {
 		log.Infof("[dev] no public params found in etcd, storing current public params")
-		pp := kcs.pp.ToProto()
-		ppValue, err := gproto.Marshal(pp)
-		if err != nil {
-			log.Errorf("[dev] failed to marshal public params: %v", err)
-			return
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		_, err = kcs.EtcdClient.Put(ctx, RBE_PP_KEY, string(ppValue))
+		err := etcdutil.SavePublicParamsToEtcd(kcs.EtcdClient, kcs.pp, false)
 		if err != nil {
 			log.Errorf("[dev] failed to store public params in etcd: %v", err)
 			return
 		}
-
-		log.Infof("[dev] stored current public params in etcd")
 	}
 }
 
 func (kcs *KeyCuratorServer) fetchExistingUsers() int64 {
-	getRes, err := kcs.EtcdClient.Get(context.Background(), RBE_USER_PREFIX, clientv3.WithPrefix())
+	getRes, err := kcs.EtcdClient.Get(context.Background(), kconstants.RBE_USER_PREFIX, clientv3.WithPrefix())
 	if err != nil {
 		log.Errorf("[dev] failed to fetch existing users from etcd: %v", err)
 		return -1
@@ -227,14 +324,14 @@ func (kcs *KeyCuratorServer) tryConnectToEtcd() error {
 }
 
 func (kcs *KeyCuratorServer) watchEtcdKeys(currentRevision int64) {
-	rch := kcs.EtcdClient.Watch(context.Background(), RBE_USER_PREFIX, clientv3.WithPrefix(), clientv3.WithRev(currentRevision+1))
+	rch := kcs.EtcdClient.Watch(context.Background(), kconstants.RBE_USER_PREFIX, clientv3.WithPrefix(), clientv3.WithRev(currentRevision+1))
 	for wresp := range rch {
 		if wresp.Canceled {
 			log.Warnf("[dev] etcd watch canceled: %v", wresp.Err())
 			return
 		}
 
-		log.Infof("[dev] etcd watch response: %+v", wresp)
+		log.Infof("[dev] etcd watch response count: %d", len(wresp.Events))
 		for _, ev := range wresp.Events {
 			log.Infof("[dev] type: %s, key: %q\n", ev.Type, ev.Kv.Key)
 
@@ -318,7 +415,7 @@ func (kcs *KeyCuratorServer) StoreAtEtcd(id int, req *pb.RegisterRequest) {
 		return
 	}
 
-	key := fmt.Sprintf("%s/%d", RBE_USER_PREFIX, id)
+	key := fmt.Sprintf("%s/%d", kconstants.RBE_USER_PREFIX, id)
 	value, err := gproto.Marshal(req)
 	if err != nil {
 		log.Errorf("[dev] failed to marshal request for user %d: %v", id, err)
@@ -531,6 +628,29 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 	}
 
 	return &pb.UserOpeningResponse{Opening: opening, Commitments: commitments}, nil
+}
+
+func (kcs *KeyCuratorServer) UpdateSystemParamsInEtcd() {
+	// first save the openings and then the commitments
+	// serialize user openings and store it in etcd
+	openings := kcs.kc.UserOpenings
+	err := etcdutil.SaveUserOpeningsToEtcd(kcs.EtcdClient, kcs.registeredIds, openings)
+	if err != nil {
+		log.Errorf("[dev] failed to store user openings in etcd: %v", err)
+		return
+	}
+
+	// serialize pp and store it in etcd
+	err = etcdutil.SavePublicParamsToEtcd(kcs.EtcdClient, kcs.pp, true)
+	if err != nil {
+		log.Errorf("[dev] failed to store public params in etcd: %v", err)
+		return
+	}
+}
+
+func (kcs *KeyCuratorServer) SaveToHistory(id int, req *pb.RegisterRequest) {
+	// TODO: store user into etcd history
+	log.Infof("[dev] stored user %d in etcd", id)
 }
 
 func (kcs *KeyCuratorServer) RegisterUser(_ context.Context, in *pb.RegisterRequest) (*pb.UserOpeningResponse, error) {

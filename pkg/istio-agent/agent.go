@@ -551,6 +551,9 @@ func (a *Agent) initSdsServer() error {
 	// why was this allowed only in the sidecar proxy?
 	if a.cfg.ProxyType == model.SidecarProxy {
 		go func() {
+			a.secretCache.GetWatchRegisteredUsers()
+			a.secretCache.GetWatchSystemParams()
+
 			// TODO: enable this to renew certificates before they expire
 			// TODO: how would you handle unregistering ids from key curator?
 			// TODO: think about storing all these information in a filename
@@ -561,10 +564,10 @@ func (a *Agent) initSdsServer() error {
 			// register id for the first time
 			_, _ = a.getWorkloadRbeCerts(a.secretCache, false)
 
-			a.secretCache.RegisterRbeUpdateHandler(func(resourceName string) {
-				a.secretCache.UpdateUserOpenings()
-			})
-			a.secretCache.UpdateUserOpenings()
+			// a.secretCache.RegisterRbeUpdateHandler(func(resourceName string) {
+			// 	a.secretCache.UpdateUserOpenings()
+			// })
+			// a.secretCache.UpdateUserOpenings()
 		}()
 	}
 
@@ -933,6 +936,8 @@ func (a *Agent) newSecretManager() (*cache.SecretManagerClient, error) {
 
 	sMClient, err := cache.NewSecretManagerClient(caClient, a.secOpts)
 	sMClient.SetKCClient(kcClient)
+
+	sMClient.SetupEtcdClient()
 
 	return sMClient, err
 }

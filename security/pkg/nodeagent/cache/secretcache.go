@@ -18,6 +18,7 @@ package cache
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
 	"crypto/tls"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -26,15 +27,20 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
 	"github.com/etclab/rbe"
 	"github.com/fsnotify/fsnotify"
+	clientv3 "go.etcd.io/etcd/client/v3"
 
 	bls "github.com/cloudflare/circl/ecc/bls12381"
+	"github.com/etclab/rbe/proto"
+	gproto "google.golang.org/protobuf/proto"
 	"istio.io/istio/pkg/backoff"
 	"istio.io/istio/pkg/file"
 	"istio.io/istio/pkg/log"
@@ -43,6 +49,9 @@ import (
 	"istio.io/istio/pkg/security"
 	"istio.io/istio/pkg/spiffe"
 	"istio.io/istio/pkg/util/sets"
+	etcdutil "istio.io/istio/security/pkg/etcd/util"
+	kconstants "istio.io/istio/security/pkg/key-curator/constants"
+	kproto "istio.io/istio/security/pkg/key-curator/key-curator"
 	kcUtil "istio.io/istio/security/pkg/key-curator/util"
 	"istio.io/istio/security/pkg/monitoring"
 	nodeagentutil "istio.io/istio/security/pkg/nodeagent/util"
@@ -101,6 +110,21 @@ type SecretManagerClient struct {
 	caClient security.Client
 
 	kcClient security.KeyCuratorClient
+
+	lastCommitmentsUpdate atomic.Value
+
+	resetOpeningsChan chan bool
+
+	rbePp   *rbe.PublicParams
+	muRbePp sync.RWMutex
+
+	userOpenings   map[string][]*bls.G1
+	muUserOpenings sync.RWMutex
+
+	regUsers   map[string]*RegisteredUser
+	muRegUsers sync.RWMutex
+
+	etcdClient *clientv3.Client
 
 	// configOptions includes all configurable params for the cache.
 	configOptions *security.Options
@@ -253,9 +277,19 @@ func NewSecretManagerClient(caClient security.Client, options *security.Options)
 	return ret, nil
 }
 
-// TODO: find alt way to do this
 func (sc *SecretManagerClient) SetKCClient(skc security.KeyCuratorClient) {
 	sc.kcClient = skc
+}
+
+func (sc *SecretManagerClient) SetupEtcdClient() {
+	client, err := etcdutil.TryConnectToEtcdWithRetry()
+	if err != nil {
+		log.Errorf("[dev] unable to connect to etcd: %v", err)
+		return
+	}
+
+	sc.etcdClient = client
+	log.Infof("[dev] etcd client set in secret manager client")
 }
 
 func (sc *SecretManagerClient) Close() {
@@ -265,6 +299,9 @@ func (sc *SecretManagerClient) Close() {
 	}
 	if sc.kcClient != nil {
 		sc.kcClient.Close()
+	}
+	if sc.etcdClient != nil {
+		sc.etcdClient.Close()
 	}
 	close(sc.stop)
 }
@@ -386,6 +423,511 @@ func (sc *SecretManagerClient) GetRbeCachedSecret(resourceName string) (secret *
 func (sc *SecretManagerClient) RegisterPodValidityMap(pValidity map[string]bool) {
 	log.Infof("[dev] registering pod validity map with value: %v", pValidity)
 	sc.rbeCache.SetPodValidationmap(pValidity)
+}
+
+type RegisteredUser struct {
+	Id        int64
+	PublicKey *bls.G1
+	Xi        []*bls.G1
+	Ip        string
+	Port      string
+	Token     string
+}
+
+// fetches and listens for updates to registered users from etcd
+func (sc *SecretManagerClient) GetWatchRegisteredUsers() {
+	userRes, err := sc.etcdClient.Get(context.Background(), kconstants.RBE_USER_PREFIX, clientv3.WithPrefix())
+	if err != nil {
+		log.Errorf("[dev] failed to fetch existing users from etcd: %v", err)
+	}
+
+	log.Infof("[dev] fetched %d existing users from etcd with revision: %d", len(userRes.Kvs), userRes.Header.Revision)
+	for _, kv := range userRes.Kvs {
+		value := kv.Value
+		keyStr := string(kv.Key)
+
+		err := sc.handleRegisteredUserUpdate(keyStr, value)
+		if err != nil {
+			log.Errorf("[dev] failed to handle registered user update: %v", err)
+		}
+	}
+
+	currentRevision := userRes.Header.Revision
+	log.Infof("current revision is %d", currentRevision)
+
+	// watch for updates to registered users
+	go func() {
+		uch := sc.etcdClient.Watch(context.Background(), kconstants.RBE_USER_PREFIX, clientv3.WithPrefix(), clientv3.WithRev(currentRevision+1))
+		for newUserResp := range uch {
+			if newUserResp.Canceled {
+				log.Warnf("[dev] etcd watch canceled: %v", newUserResp.Err())
+				return
+			}
+
+			for _, ev := range newUserResp.Events {
+				log.Infof("[dev] type: %s, key: %q\n", ev.Type, ev.Kv.Key)
+
+				if ev.Type == clientv3.EventTypePut {
+					key := string(ev.Kv.Key)
+					value := ev.Kv.Value
+
+					err := sc.handleRegisteredUserUpdate(key, value)
+					if err != nil {
+						log.Errorf("[dev] failed to handle registered user update: %v", err)
+					}
+				}
+			}
+		}
+	}()
+}
+
+func (sc *SecretManagerClient) updatePodValidationMap() error {
+	podsValidity := map[string]bool{}
+	jsonString := []byte{}
+
+	rbeSecret := sc.GetRbeCachedSecret(security.WorkloadRbeIdentityCertResourceName)
+	if rbeSecret != nil {
+		allRbeIds := []*security.RbeId{}
+
+		sc.muRegUsers.RLock()
+		for _, v := range sc.regUsers {
+			port, err := strconv.Atoi(v.Port)
+			if err != nil {
+				return fmt.Errorf("[dev] err on converting port to int: %v", err)
+			}
+
+			rbeId := &security.RbeId{
+				Token: v.Token,
+				Ip:    v.Ip,
+				Port:  port,
+			}
+			allRbeIds = append(allRbeIds, rbeId)
+		}
+		sc.muRegUsers.RUnlock()
+
+		for _, rbeId := range allRbeIds {
+			if rbeId == nil {
+				continue
+			}
+			tokenBytes := []byte(rbeId.Token)
+			tokenHex := fmt.Sprintf("%x", md5.Sum(tokenBytes))
+
+			key := fmt.Sprintf("%s|%s", rbeId.Ip, tokenHex)
+
+			// podsValidity[key] = sc.checkPodValidity(rbeId, rbeSecret, pp)
+			podsValidity[key] = sc.checkPodValidity(rbeId, rbeSecret)
+		}
+	} else {
+		return fmt.Errorf("[dev] rbeSecret is nil, cannot update pod validity map")
+	}
+
+	log.Infof("[dev] printing pod validity map for all pods")
+	log.Infof("%+v", podsValidity)
+
+	jsonString, err := json.Marshal(podsValidity)
+	if err != nil {
+		return fmt.Errorf("[dev] err on marshalling pod validity map to json: %v", err)
+	} else {
+		log.Infof("[dev] pod validity map json string: %s", string(jsonString))
+	}
+
+	// even if there's an error, we save an empty map so the json file is always written
+	defer func() {
+		err = os.WriteFile("/etc/istio/proxy/pod_validity_data.json", jsonString, 0644)
+		if err != nil {
+			log.Errorf("[dev] err on WriteFile: %v", err)
+		}
+
+		sc.RegisterPodValidityMap(podsValidity)
+	}()
+
+	return nil
+}
+
+func (sc *SecretManagerClient) checkPodValidity(rbeId *security.RbeId,
+	rbeSecret *security.RbeSecretItem) bool {
+	commitments := []*bls.G1{}
+	userOpening := []*bls.G1{}
+	pp := new(rbe.PublicParams)
+
+	sc.muRbePp.RLock()
+	if sc.rbePp != nil {
+		commitments = sc.rbePp.Commitments
+		pp = sc.rbePp
+		log.Infof("[dev] commitments length: %d", len(commitments))
+	}
+	sc.muRbePp.RUnlock()
+
+	otherRbeId := &security.RbeId{
+		Ip:    rbeId.Ip,
+		Port:  rbeId.Port,
+		Token: rbeId.Token,
+	}
+
+	idOtherUser := int(otherRbeId.ToNumber())
+
+	otherUserOpening := []*bls.G1{}
+	sc.muUserOpenings.RLock()
+	if sc.userOpenings != nil {
+		id := strconv.Itoa(rbeSecret.User.Id())
+		userOpening = sc.userOpenings[id]
+		otherUserOpening = sc.userOpenings[strconv.Itoa(idOtherUser)]
+	}
+
+	log.Infof("[dev] length of commitments: %d, length of userOpening: %d, length of otherUserOpening: %d",
+		len(commitments), len(userOpening), len(otherUserOpening))
+	if len(commitments) == 0 || len(userOpening) == 0 || len(otherUserOpening) == 0 {
+		log.Errorf("[dev] commitments or userOpening is empty, cannot update pod validity map")
+		return false
+	}
+	rbeSecret.User.Update(commitments, userOpening)
+
+	sc.muUserOpenings.RUnlock()
+
+	thisUser := rbeSecret.User
+
+	// log.Infof("[dev] commitments when checking pod validity: %+v", pp.Commitments)
+	if len(pp.Commitments) == 0 {
+		log.Errorf("[dev] commitments is empty cannot check pod validity")
+		return false
+	}
+
+	nonce := []byte(fmt.Sprintf("%d", time.Now().Unix()))
+	nonceHash := kcUtil.HashToGt(nonce)
+
+	if idOtherUser == thisUser.Id() {
+		return true
+	}
+
+	log.Infof("[dev] id of this user: %d vs id of other user: %d", thisUser.Id(), idOtherUser)
+	// log.Infof("[dev] this user printed here %+v", thisUser)
+
+	cipherText := thisUser.Encrypt(idOtherUser, nonceHash)
+
+	sk := new(bls.Scalar)
+	sk.SetUint64(uint64(otherRbeId.SecretKey()))
+
+	otherUser := rbe.NewUserWithSecret(pp, idOtherUser, sk)
+
+	otherUser.Update(commitments, otherUserOpening)
+
+	decryptedNonce, err := otherUser.Decrypt(cipherText)
+	if err != nil {
+		log.Errorf("[dev] failed to decrypt nonce: %v", err)
+		return false
+	}
+
+	return nonceHash.IsEqual(decryptedNonce)
+}
+
+func (sc *SecretManagerClient) handleRegisteredUserUpdate(keyStr string, value []byte) error {
+	req := &kproto.RegisterRequest{}
+	err := gproto.Unmarshal([]byte(value), req)
+	if err == nil {
+		publicKey := new(bls.G1)
+		err := publicKey.SetBytes(req.PublicKey.GetPoint())
+		if err != nil {
+			return fmt.Errorf("[dev] error setting public key for user %d: %v", req.Id, err)
+		}
+
+		xi := make([]*bls.G1, len(req.GetXi()))
+		for i, v := range req.GetXi() {
+			if len(v.GetPoint()) == 0 {
+				xi[i] = nil
+			} else {
+				xg1 := new(bls.G1)
+				xg1.SetBytes(v.GetPoint())
+				xi[i] = xg1
+			}
+		}
+
+		registeredUser := &RegisteredUser{
+			Id:        req.Id,
+			Ip:        req.Ip,
+			Port:      req.Port,
+			Token:     req.Token,
+			Xi:        xi,
+			PublicKey: publicKey,
+		}
+
+		sc.muRegUsers.Lock()
+		if sc.regUsers == nil {
+			sc.regUsers = make(map[string]*RegisteredUser)
+		}
+		sc.regUsers[keyStr] = registeredUser
+		sc.muRegUsers.Unlock()
+
+		log.Infof("[dev] saved registered user for key: %s", keyStr)
+	} else {
+		return fmt.Errorf("[dev] error unmarshalling request for user %s: %v", keyStr, err)
+	}
+
+	return nil
+}
+
+// fetches and listens for updates to public params and user openings from etcd
+func (sc *SecretManagerClient) GetWatchSystemParams() {
+	sysParamsRes, err := sc.etcdClient.Get(context.Background(), kconstants.RBE_SYSTEM_PREFIX, clientv3.WithPrefix())
+	if err != nil {
+		log.Errorf("[dev] failed to fetch system params from etcd: %v", err)
+		return
+	}
+
+	log.Infof("[dev] fetched %d keys from etcd", len(sysParamsRes.Kvs))
+
+	for _, kv := range sysParamsRes.Kvs {
+		value := kv.Value
+		key := kv.Key
+		keyStr := string(key)
+
+		log.Infof("[dev] received key: %s, len(value): %d", key, len(value))
+
+		// check if key is for public params
+		if keyStr == kconstants.RBE_PP_KEY {
+			ppProto := &proto.PublicParams{}
+			err := gproto.Unmarshal([]byte(value), ppProto)
+			if err != nil {
+				log.Errorf("[dev] failed to unmarshal public params from etcd: %v", err)
+				return
+			}
+
+			pp := new(rbe.PublicParams)
+			pp.FromProto(ppProto)
+			sc.muRbePp.Lock()
+			if sc.rbePp == nil {
+				sc.rbePp = pp
+			} else {
+				sc.rbePp.MaxUsers = pp.MaxUsers
+				sc.rbePp.BlockSize = pp.BlockSize
+				sc.rbePp.NumBlocks = pp.NumBlocks
+				sc.rbePp.G1 = pp.G1
+				sc.rbePp.G2 = pp.G2
+			}
+			sc.muRbePp.Unlock()
+
+			log.Infof("[dev] saved public params from etcd")
+		}
+
+		if keyStr == kconstants.RBE_PP_CRS_H1_KEY {
+			crsH1Proto := &kproto.H1{}
+			err := gproto.Unmarshal([]byte(value), crsH1Proto)
+			if err != nil {
+				log.Errorf("[dev] failed to unmarshal crsH1 from etcd: %v", err)
+				return
+			}
+
+			size := len(crsH1Proto.H1)
+			h1 := make([]*bls.G1, size)
+
+			for i, v := range crsH1Proto.GetH1() {
+				if len(v.GetPoint()) == 0 {
+					h1[i] = nil
+				} else {
+					h1[i] = new(bls.G1)
+					err := h1[i].SetBytes(v.GetPoint())
+					if err != nil {
+						log.Errorf("error setting crs.H1[%d]: %v", i, err)
+					}
+				}
+			}
+
+			sc.muRbePp.Lock()
+			if sc.rbePp == nil {
+				pp := new(rbe.PublicParams)
+				pp.CRS = new(rbe.CRS)
+				pp.CRS.H1 = h1
+				sc.rbePp = pp
+			} else {
+				sc.rbePp.CRS.H1 = h1
+			}
+			sc.muRbePp.Unlock()
+		}
+
+		if keyStr == kconstants.RBE_PP_CRS_H2_KEY {
+			crsH2Proto := &kproto.H2{}
+			err := gproto.Unmarshal([]byte(value), crsH2Proto)
+			if err != nil {
+				log.Errorf("[dev] failed to unmarshal crsH2 from etcd: %v", err)
+				return
+			}
+
+			size := len(crsH2Proto.H2)
+			h2 := make([]*bls.G2, size)
+
+			for i, v := range crsH2Proto.GetH2() {
+				if len(v.GetPoint()) == 0 {
+					h2[i] = nil
+				} else {
+					h2[i] = new(bls.G2)
+					err := h2[i].SetBytes(v.GetPoint())
+					if err != nil {
+						log.Errorf("error setting crs.H2[%d]: %v", i, err)
+					}
+				}
+			}
+
+			sc.muRbePp.Lock()
+			if sc.rbePp == nil {
+				pp := new(rbe.PublicParams)
+				pp.CRS = new(rbe.CRS)
+				pp.CRS.H2 = h2
+				sc.rbePp = pp
+			} else {
+				sc.rbePp.CRS.H2 = h2
+			}
+			sc.muRbePp.Unlock()
+		}
+
+		if keyStr == kconstants.RBE_PP_COMMITMENTS_KEY {
+			err := sc.handleCommitmentsUpdate(keyStr, value, false, kv.ModRevision)
+			if err != nil {
+				log.Errorf("[dev] failed to handle commitments update: %v", err)
+			} else {
+				// now use updates after this ModRevision only
+				sc.lastCommitmentsUpdate.Store(kv.ModRevision)
+			}
+		}
+
+		// openings will be handled separately
+	}
+
+	currentRevision := sysParamsRes.Header.Revision
+	if sc.lastCommitmentsUpdate.Load() != nil {
+		currentRevision = sc.lastCommitmentsUpdate.Load().(int64)
+	}
+	log.Infof("current revision for system params is %d", currentRevision)
+
+	// watch for updates to commitments
+	go func() {
+		rch := sc.etcdClient.Watch(context.Background(), kconstants.RBE_PP_COMMITMENTS_KEY, clientv3.WithRev(currentRevision+1))
+		for commitResp := range rch {
+			if commitResp.Canceled {
+				log.Warnf("[dev] etcd watch canceled: %v", commitResp.Err())
+				return
+			}
+
+			log.Infof("[dev] revision for commitments? %d", commitResp.Header.Revision)
+			for _, ev := range commitResp.Events {
+				log.Infof("[dev] type: %s, key: %q\n", ev.Type, ev.Kv.Key)
+
+				if ev.Type == clientv3.EventTypePut {
+					key := string(ev.Kv.Key)
+					value := ev.Kv.Value
+
+					log.Infof("[dev] revisions for commitment key (%s): CreateRevision %d, ModRevision: %d", key, ev.Kv.CreateRevision, ev.Kv.ModRevision)
+					// TODO: the isWatchedResponse param is redundant - remove it
+					err := sc.handleCommitmentsUpdate(key, value, true, ev.Kv.ModRevision)
+					if err != nil {
+						log.Errorf("[dev] failed to handle commitments update: %v", err)
+					} else {
+						// now use updates after this ModRevision only
+						sc.lastCommitmentsUpdate.Store(ev.Kv.ModRevision)
+					}
+				}
+			}
+		}
+	}()
+
+	// updates to openings are handled separately
+}
+
+func (sc *SecretManagerClient) ListWatchOpeningsUpdate(currentRevision int64) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// openingsRes, err := sc.etcdClient.Get(ctx, kconstants.RBE_OPENINGS_KEY, clientv3.WithPrefix(), clientv3.WithRev(currentRevision+1))
+	openingsRes, err := sc.etcdClient.Get(ctx, kconstants.RBE_OPENINGS_KEY, clientv3.WithPrefix())
+	if err != nil {
+		log.Errorf("[dev] failed to fetch openings from etcd: %v", err)
+		return
+	}
+
+	log.Infof("[dev] fetched %d openings from etcd", len(openingsRes.Kvs))
+
+	for _, kv := range openingsRes.Kvs {
+		value := kv.Value
+		key := kv.Key
+		keyStr := string(key)
+
+		log.Infof("[dev] received openings with key: %s, modRevision: %d", key, kv.ModRevision)
+		err := sc.handleOpeningsUpdate(keyStr, value, kv.ModRevision)
+		if err != nil {
+			log.Errorf("[dev] failed to handle user opening update: %v", err)
+		}
+	}
+
+	err = sc.updatePodValidationMap()
+	if err != nil {
+		log.Errorf("[dev] failed to update pod validation map: %v", err)
+	}
+}
+
+func (sc *SecretManagerClient) handleOpeningsUpdate(keyStr string, value []byte, modRevision int64) error {
+
+	// parse user id from key
+	// key format: rbe-system/openings/{userId}
+	parts := strings.Split(keyStr, "/")
+	if len(parts) != 3 {
+		return fmt.Errorf("[dev] invalid key format for user openings: %s", keyStr)
+	}
+	idStr := parts[2]
+
+	openingsProto := &kproto.Opening{}
+	err := gproto.Unmarshal([]byte(value), openingsProto)
+	if err != nil {
+		return fmt.Errorf("[dev] failed to unmarshal user openings from etcd: %v", err)
+	}
+
+	opening := []*bls.G1{}
+	for _, v := range openingsProto.Opening {
+		g1 := new(bls.G1)
+		g1.SetBytes(v.GetPoint())
+		opening = append(opening, g1)
+	}
+
+	sc.muUserOpenings.Lock()
+	if sc.userOpenings == nil {
+		sc.userOpenings = make(map[string][]*bls.G1)
+	}
+	sc.userOpenings[idStr] = opening
+	sc.muUserOpenings.Unlock()
+
+	log.Infof("[dev] saved user openings for key: %s", keyStr)
+	return nil
+}
+
+func (sc *SecretManagerClient) handleCommitmentsUpdate(key string, value []byte,
+	isWatchedResponse bool, revision int64) error {
+	commitmentsProto := &kproto.Commitments{}
+	err := gproto.Unmarshal([]byte(value), commitmentsProto)
+	if err != nil {
+		return fmt.Errorf("[dev] failed to unmarshal commitments from etcd: %v", err)
+	}
+
+	commitments := make([]*bls.G1, len(commitmentsProto.Commitments))
+	for i, v := range commitmentsProto.GetCommitments() {
+		commitments[i] = new(bls.G1)
+		err = commitments[i].SetBytes(v.GetPoint())
+		if err != nil {
+			return fmt.Errorf("error setting commitments[%d]: %v", i, err)
+		}
+	}
+
+	sc.muRbePp.Lock()
+	if sc.rbePp == nil {
+		pp := new(rbe.PublicParams)
+		pp.Commitments = commitments
+		sc.rbePp = pp
+	} else {
+		sc.rbePp.Commitments = commitments
+	}
+	sc.muRbePp.Unlock()
+
+	log.Infof("[dev] updated commitments from etcd for key: %s", key)
+
+	go sc.ListWatchOpeningsUpdate(revision)
+
+	return nil
 }
 
 func (sc *SecretManagerClient) UpdateUserOpenings() {
@@ -549,7 +1091,7 @@ func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(rbeId *security.RbeId,
 		user = cachedSecret.User
 		cachedId = user.Id()
 		pp = cachedSecret.Pp
-} else {
+	} else {
 		// TODO: check if user and pp are stored in a well-known file location
 		log.Infof("[dev] no cached secret found, checking if user and pp are stored in a file")
 	}
@@ -565,11 +1107,14 @@ func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(rbeId *security.RbeId,
 	} else {
 		log.Infof("[dev] registering user with id %d for the first time", id)
 
-		// register the user with id
-		pp, err = sc.kcClient.FetchPublicParams()
-		if err != nil {
-			log.Errorf("[dev] err on FetchPublicParams: %v", err)
+		pp := new(rbe.PublicParams)
+		sc.muRbePp.RLock()
+		pp = sc.rbePp
+		sc.muRbePp.RUnlock()
+		if pp == nil {
+			return nil, fmt.Errorf("public params not found")
 		}
+		// log.Infof("[dev] commitments when registering the user %+v", pp.Commitments)
 
 		sk := new(bls.Scalar)
 		sk.SetUint64(uint64(rbeId.SecretKey()))
@@ -643,6 +1188,14 @@ func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(rbeId *security.RbeId,
 	}
 
 	sc.registerRbeSecret(*rsi)
+
+	// sometimes the user registration itself takes time, and by the time
+	// registration finishes and certificate is generated, the update to
+	// pod validation map may be missed. So updating pod validation map here.
+	err = sc.updatePodValidationMap()
+	if err != nil {
+		log.Errorf("[dev] failed to update pod validation map: %v", err)
+	}
 
 	return rsi, nil
 }
