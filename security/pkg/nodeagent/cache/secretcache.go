@@ -513,6 +513,7 @@ func (sc *SecretManagerClient) updatePodValidationMap() error {
 			tokenHex := fmt.Sprintf("%x", md5.Sum(tokenBytes))
 
 			key := fmt.Sprintf("%s|%s", rbeId.Ip, tokenHex)
+			// key := fmt.Sprintf("%s|%s", rbeId.Ip, rbeId.Token)
 
 			// podsValidity[key] = sc.checkPodValidity(rbeId, rbeSecret, pp)
 			podsValidity[key] = sc.checkPodValidity(rbeId, rbeSecret)

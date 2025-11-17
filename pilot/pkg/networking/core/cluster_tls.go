@@ -166,6 +166,13 @@ func (cb *ClusterBuilder) buildUpstreamClusterTLSContext(opts *buildClusterOpts,
 
 		isServiceInDefaultNamespace := false
 		isProxyInDefaultNamespace := false
+		isIngressProxy := false
+
+		if cb.proxyLabels["app"] == "istio-ingressgateway" {
+			isIngressProxy = true
+		}
+		log.Infof("[dev] isIngressProxy: %v", isIngressProxy)
+		log.Infof("[dev] opts.serviceAccounts %+v", opts.serviceAccounts)
 
 		// FIXME: services/proxies CAN BE in namespaces other than default
 		// if we're building cluster for a sidecar proxy
@@ -190,7 +197,7 @@ func (cb *ClusterBuilder) buildUpstreamClusterTLSContext(opts *buildClusterOpts,
 		}
 
 		// if yes then we'll use the our custom rbeIdentity between sidecars of the services
-		if isServiceInDefaultNamespace && isProxyInDefaultNamespace {
+		if isServiceInDefaultNamespace && (isProxyInDefaultNamespace || isIngressProxy) {
 			tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs = append(tlsContext.CommonTlsContext.TlsCertificateSdsSecretConfigs,
 				sec_model.ConstructSdsSecretConfig("rbeIdentity"))
 		} else {
@@ -292,13 +299,13 @@ func (cb *ClusterBuilder) buildUpstreamClusterTLSContext(opts *buildClusterOpts,
 		if err != nil {
 			log.Errorf("[dev] Failed to create TypedStructAny: %v", err)
 		}
-		log.Infof("[dev] typed struct any: %v", typedStructAny)
+		// log.Infof("[dev] typed struct any: %v", typedStructAny)
 
 		defaultValidationContext := &tlsv3.CertificateValidationContext{
 			MatchSubjectAltNames: util.StringToExactMatch(tls.SubjectAltNames),
 		}
 		// add our custom rbe validator config for services in default namespace
-		if isServiceInDefaultNamespace && isProxyInDefaultNamespace {
+		if isServiceInDefaultNamespace && (isProxyInDefaultNamespace || isIngressProxy) {
 			defaultValidationContext.CustomValidatorConfig = &core.TypedExtensionConfig{
 				Name:        "envoy.tls.cert_validator.rbe",
 				TypedConfig: typedStructAny,

@@ -548,8 +548,8 @@ func (a *Agent) initSdsServer() error {
 		a.secretCache.RegisterSecretHandler(a.sdsServer.OnSecretUpdate)
 	}
 
-	// why was this allowed only in the sidecar proxy?
-	if a.cfg.ProxyType == model.SidecarProxy {
+	// model.Router is for ingress gateway
+	if a.cfg.ProxyType == model.SidecarProxy || a.cfg.ProxyType == model.Router {
 		go func() {
 			a.secretCache.GetWatchRegisteredUsers()
 			a.secretCache.GetWatchSystemParams()
