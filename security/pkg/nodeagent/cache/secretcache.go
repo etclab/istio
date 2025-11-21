@@ -1319,7 +1319,7 @@ func (sc *SecretManagerClient) UpdateUserOpenings() {
 		// for single user
 		timeBeforeFAU := time.Now()
 
-		commitments, userOpening, err := sc.kcClient.FetchUpdate(id)
+		commitments, userOpening, _, err := sc.kcClient.FetchUpdate(id)
 		if err != nil {
 			log.Errorf("[dev] err on FetchUpdate: %v", err)
 		}
@@ -1348,7 +1348,7 @@ func (sc *SecretManagerClient) UpdateUserOpenings() {
 		// for all users
 		timeBeforeFAU = time.Now()
 
-		commitments, allOpenings, allRbeIds, err := sc.kcClient.FetchAllUpdates()
+		commitments, allOpenings, allRbeIds, err := sc.kcClient.FetchAllUpdates(pp)
 		if err != nil {
 			log.Errorf("[dev] err on FetchAllUpdates(): %v", err)
 		}
@@ -1497,11 +1497,19 @@ func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(rbeId *security.RbeId,
 		// create user
 		user = rbe.NewUserWithSecret(pp, int(id), sk)
 
-		// TODO: during registration send the ip, port, token, id, and public key (user includes th public key?)
-		commitments, opening, err := sc.kcClient.RegisterUser(user, rbeId)
+		commitments, opening, proof, err := sc.kcClient.RegisterUser(user, rbeId)
 		if err != nil {
 			log.Errorf("[dev] err on RegisterUser(): %v", err)
 			return nil, err
+		}
+
+		// set the new commitments
+		pp.Commitments = commitments
+		if rbe.VerifyMembership(pp, user.Id(), user.PublicKey(), proof) {
+			log.Infof("[dev] proof verified successfully")
+		} else {
+			log.Errorf("[dev] failure: unable to verify membership")
+			return nil, fmt.Errorf("[dev] proof has an invalid signature")
 		}
 
 		user.Update(commitments, opening)
@@ -1512,10 +1520,6 @@ func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(rbeId *security.RbeId,
 		log.Errorf("[dev] err on GetPlatformCredential(): %v", err)
 		return nil, err
 	}
-
-	// note: k8s TokenReview API to verify the token
-	// log.Infof("[dev] admin token %v", adminToken)
-	// kcUtil.VerifyServiceAccountToken(adminToken)
 
 	extensions := []pkix.Extension{
 		{
