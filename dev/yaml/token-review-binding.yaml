@@ -6,6 +6,9 @@ subjects:
 - kind: Group
   name: system:serviceaccounts:default
   apiGroup: rbac.authorization.k8s.io
+- kind: Group
+  name: system:serviceaccounts:istio-system
+  apiGroup: rbac.authorization.k8s.io
 roleRef:
   kind: ClusterRole
   name: token-review-role

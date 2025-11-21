@@ -250,7 +250,7 @@ func (kcs *KeyCuratorServer) restoreSystemParams() {
 		log.Infof("[dev] restored public params from etcd")
 	} else {
 		log.Infof("[dev] no public params found in etcd, storing current public params")
-		err := etcdutil.SavePublicParamsToEtcd(kcs.EtcdClient, kcs.pp, false)
+		_, err := etcdutil.SavePublicParamsToEtcd(kcs.EtcdClient, kcs.pp, false)
 		if err != nil {
 			log.Errorf("[dev] failed to store public params in etcd: %v", err)
 			return
@@ -631,19 +631,18 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 }
 
 func (kcs *KeyCuratorServer) UpdateSystemParamsInEtcd() {
-	// first save the openings and then the commitments
-	// serialize user openings and store it in etcd
-	openings := kcs.kc.UserOpenings
-	err := etcdutil.SaveUserOpeningsToEtcd(kcs.EtcdClient, kcs.registeredIds, openings)
+	// serialize pp and store it in etcd
+	rev, err := etcdutil.SavePublicParamsToEtcd(kcs.EtcdClient, kcs.pp, true)
 	if err != nil {
-		log.Errorf("[dev] failed to store user openings in etcd: %v", err)
+		log.Errorf("[dev] failed to store public params in etcd: %v", err)
 		return
 	}
 
-	// serialize pp and store it in etcd
-	err = etcdutil.SavePublicParamsToEtcd(kcs.EtcdClient, kcs.pp, true)
+	// serialize user openings and store it in etcd under the new commitments' revision
+	openings := kcs.kc.UserOpenings
+	err = etcdutil.SaveUserOpeningsToEtcd(kcs.EtcdClient, kcs.registeredIds, openings, rev)
 	if err != nil {
-		log.Errorf("[dev] failed to store public params in etcd: %v", err)
+		log.Errorf("[dev] failed to store user openings in etcd: %v", err)
 		return
 	}
 }

@@ -553,6 +553,8 @@ func (a *Agent) initSdsServer() error {
 		go func() {
 			a.secretCache.GetWatchRegisteredUsers()
 			a.secretCache.GetWatchSystemParams()
+			go a.secretCache.UpdatePodValidationWithOpening()
+			go a.secretCache.UpdatePodValidationWithUser()
 
 			// TODO: enable this to renew certificates before they expire
 			// TODO: how would you handle unregistering ids from key curator?

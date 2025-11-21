@@ -67,12 +67,13 @@ func TryConnectToEtcdWithRetry() (*clientv3.Client, error) {
 }
 
 func SavePublicParamsToEtcd(etcdClient *clientv3.Client, pp *rbe.PublicParams,
-	onlyCommitments bool) error {
+	onlyCommitments bool) (int64, error) {
 
 	// if onlyCommitments is true, only save the commitments part
 	// if false, save all parts
 	// as the rest of the public params don't change
 	saveAll := !onlyCommitments
+	rev := int64(-1) // revision of the latest saved commitments
 
 	if saveAll {
 		// rest of the public params
@@ -99,13 +100,13 @@ func SavePublicParamsToEtcd(etcdClient *clientv3.Client, pp *rbe.PublicParams,
 		ppCopyValue := ppCopy.ToProto()
 		ppValue, err := gproto.Marshal(ppCopyValue)
 		if err != nil {
-			return fmt.Errorf("[dev] failed to marshal public params: %v", err)
+			return rev, fmt.Errorf("[dev] failed to marshal public params: %v", err)
 		}
 
 		// this only saves maxUsers, blockSize, numBlocks, G1, G2
-		err = PutKVToEtcd(etcdClient, kconstants.RBE_PP_KEY, ppValue)
+		_, err = PutKVToEtcd(etcdClient, kconstants.RBE_PP_KEY, ppValue)
 		if err != nil {
-			return err
+			return rev, err
 		} else {
 			log.Infof("[dev] saved public params metadata to etcd")
 		}
@@ -125,11 +126,11 @@ func SavePublicParamsToEtcd(etcdClient *clientv3.Client, pp *rbe.PublicParams,
 		}
 		crsH1Bytes, err := gproto.Marshal(crsH1Proto)
 		if err != nil {
-			return fmt.Errorf("[dev] failed to marshal crsH1: %v", err)
+			return rev, fmt.Errorf("[dev] failed to marshal crsH1: %v", err)
 		}
-		err = PutKVToEtcd(etcdClient, kconstants.RBE_PP_CRS_H1_KEY, crsH1Bytes)
+		_, err = PutKVToEtcd(etcdClient, kconstants.RBE_PP_CRS_H1_KEY, crsH1Bytes)
 		if err != nil {
-			return err
+			return rev, err
 		} else {
 			log.Infof("[dev] saved crsH1 to etcd")
 		}
@@ -145,11 +146,11 @@ func SavePublicParamsToEtcd(etcdClient *clientv3.Client, pp *rbe.PublicParams,
 		}
 		crsH2Bytes, err := gproto.Marshal(crsH2Proto)
 		if err != nil {
-			return fmt.Errorf("[dev] failed to marshal crsH2: %v", err)
+			return rev, fmt.Errorf("[dev] failed to marshal crsH2: %v", err)
 		}
-		err = PutKVToEtcd(etcdClient, kconstants.RBE_PP_CRS_H2_KEY, crsH2Bytes)
+		_, err = PutKVToEtcd(etcdClient, kconstants.RBE_PP_CRS_H2_KEY, crsH2Bytes)
 		if err != nil {
-			return err
+			return rev, err
 		} else {
 			log.Infof("[dev] saved crsH2 to etcd")
 		}
@@ -164,35 +165,37 @@ func SavePublicParamsToEtcd(etcdClient *clientv3.Client, pp *rbe.PublicParams,
 	}
 	commitmentsBytes, err := gproto.Marshal(commitments)
 	if err != nil {
-		return fmt.Errorf("[dev] failed to marshal public params commitments: %v", err)
+		return rev, fmt.Errorf("[dev] failed to marshal public params commitments: %v", err)
 	}
 
-	err = PutKVToEtcd(etcdClient, kconstants.RBE_PP_COMMITMENTS_KEY, commitmentsBytes)
+	rev, err = PutKVToEtcd(etcdClient, kconstants.RBE_PP_COMMITMENTS_KEY, commitmentsBytes)
 	if err != nil {
-		return err
+		return rev, err
 	} else {
 		log.Infof("[dev] saved public params commitments to etcd")
 	}
 
-	return nil
+	return rev, nil
 }
 
-func PutKVToEtcd(etcdClient *clientv3.Client, key string, value []byte) error {
+func PutKVToEtcd(etcdClient *clientv3.Client, key string, value []byte) (int64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	// TODO: lock/txn to prevent race conditions when updating commitments?
-	_, err := etcdClient.Put(ctx, key, string(value))
+	res, err := etcdClient.Put(ctx, key, string(value))
 	if err != nil {
-		return fmt.Errorf("[dev] failed to store public params in etcd: %v", err)
+		return -1, fmt.Errorf("[dev] failed to store public params in etcd: %v", err)
 	}
 
+	rev := res.Header.Revision
+
 	log.Infof("[dev] stored key: %s in etcd", key)
-	return nil
+	return rev, nil
 }
 
 func SaveUserOpeningsToEtcd(etcdClient *clientv3.Client, registeredIds map[int]bool,
-	openings [][]*bls.G1) error {
+	openings [][]*bls.G1, commitmentsRev int64) error {
 
 	for key, value := range registeredIds {
 		if !value {
@@ -210,7 +213,7 @@ func SaveUserOpeningsToEtcd(etcdClient *clientv3.Client, registeredIds map[int]b
 			if err != nil {
 				return fmt.Errorf("[dev] failed to marshal opening: %v", err)
 			}
-			err = PutKVToEtcd(etcdClient, fmt.Sprintf("%s/%d", kconstants.RBE_OPENINGS_KEY, id), openingBytes)
+			_, err = PutKVToEtcd(etcdClient, fmt.Sprintf("%s/%d/%d", kconstants.RBE_OPENINGS_KEY, commitmentsRev, id), openingBytes)
 			if err != nil {
 				return err
 			} else {
