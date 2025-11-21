@@ -568,7 +568,7 @@ func (kcs *KeyCuratorServer) FetchAllUpdates(_ context.Context, in *emptypb.Empt
 			Token:              v.token,
 			Ip:                 v.ip,
 			Port:               v.port,
-			Id:                 int32(v.id),
+			Id:                 int64(v.id),
 			PublicKey:          &proto.G1{Point: v.publicKey.Bytes()},
 			Xi:                 xiProto,
 			Request:            v.request,

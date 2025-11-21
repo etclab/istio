@@ -212,8 +212,8 @@ func attestationFromProto(attestationPb *pb.CounterAttestation) *trinc.CounterAt
 	return attestation
 }
 
-// func (c *KCClient) FetchUpdate(id int32) ([]*bls.G1, []*bls.G1, *bls.G1, error) {
-func (c *KCClient) FetchUpdate(id int64) ([]*bls.G1, []*bls.G1, error) {
+// func (c *KCClient) FetchUpdate(id int64) ([]*bls.G1, []*bls.G1, error) {
+func (c *KCClient) FetchUpdate(id int64) ([]*bls.G1, []*bls.G1, *bls.G1, error) {
 	updReq := &pb.UpdateRequest{
 		Id: id,
 	}
