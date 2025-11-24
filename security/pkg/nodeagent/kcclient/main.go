@@ -225,13 +225,13 @@ func (c *KCClient) FetchUpdate(id int64) ([]*bls.G1, []*bls.G1, *bls.G1, error) 
 		return nil, nil, nil, err
 	}
 
-	commitments, opening, _, proof := getCommitmentsOpenings(updResp)
+	commitments, opening, _, proof := parseUserRegistrationResponse(updResp)
 
 	return commitments, opening, proof, nil
 }
 
 // TODO: change/update name for this function
-func getCommitmentsOpenings(uoResp *pb.UserOpeningResponse) ([]*bls.G1,
+func parseUserRegistrationResponse(uoResp *pb.UserOpeningResponse) ([]*bls.G1,
 	[]*bls.G1, *trinc.CounterAttestation, *bls.G1) {
 
 	commitments := []*bls.G1{}
@@ -286,13 +286,22 @@ func (c *KCClient) RegisterUser(user *rbe.User, rbeId *security.RbeId) ([]*bls.G
 		log.Errorf("[dev] err on RegisterUser(): %v", err)
 		return nil, nil, nil, err
 	}
-	commitments, opening, ctrAttestation, proof := getCommitmentsOpenings(regR)
+	commitments, opening, ctrAttestation, proof := parseUserRegistrationResponse(regR)
+
+	// verifying counter attestation here
 	regMsg, err := proto.Marshal(regReq)
 	if err != nil {
 		log.Errorf("[dev] error marshalling register request: %v", err)
 	}
 
-	if trincutil.DoVerifyCounter(regMsg, ctrAttestation) {
+	pbProof := regR.GetProof()
+	proofBytes, err := proto.Marshal(pbProof)
+	if err != nil {
+		log.Errorf("[dev] error marshalling proof: %v", err)
+	}
+
+	attestUserData := append(regMsg, proofBytes...)
+	if trincutil.DoVerifyCounter(attestUserData, ctrAttestation) {
 		log.Infof("[dev] attestation verified successfully")
 
 		// save the current attestation

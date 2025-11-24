@@ -39,7 +39,6 @@ import (
 const HISTORY = "history"
 
 type RegistrationEvent struct {
-	// TODO: remove these fileds as "request" already has them
 	token     string
 	ip        string
 	port      string
@@ -94,7 +93,7 @@ func (kcs *KeyCuratorServer) ListWatchRBEUsers() {
 		log.Infof("[dev] current revision is %d", currentRevision)
 	}
 
-	go kcs.watchEtcdKeys(currentRevision)
+	go kcs.watchForNewUsers(currentRevision)
 }
 
 func (kcs *KeyCuratorServer) initEtcdWithRetry() {
@@ -331,7 +330,7 @@ func (kcs *KeyCuratorServer) tryConnectToEtcd() error {
 	return nil
 }
 
-func (kcs *KeyCuratorServer) watchEtcdKeys(currentRevision int64) {
+func (kcs *KeyCuratorServer) watchForNewUsers(currentRevision int64) {
 	rch := kcs.EtcdClient.Watch(context.Background(), kconstants.RBE_USER_PREFIX, clientv3.WithPrefix(), clientv3.WithRev(currentRevision+1))
 	for wresp := range rch {
 		if wresp.Canceled {
@@ -631,16 +630,30 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 		}
 	}
 
+	//
 	regMsg, err := gproto.Marshal(in)
 	if err != nil {
 		log.Errorf("[dev] error marshalling register request: %v", err)
 	}
-	counterAttestation, err := trincutil.DoAttestCounter(regMsg)
+
+	proof := kcs.kc.ProveMembership(id)
+	pbProof := &proto.G1{Point: proof.Bytes()}
+	pbProtoBytes, err := gproto.Marshal(pbProof)
+	if err != nil {
+		log.Errorf("[dev] error marshalling proof: %v", err)
+	}
+
+	attestUserData := append(regMsg, pbProtoBytes...)
+
+	counterAttestation, err := trincutil.DoAttestCounter(attestUserData)
 	if err != nil {
 		log.Errorf("[dev] error generating counter attestation: %v", err)
 	}
 	kcs.attestations[id] = counterAttestation
 	log.Infof("[dev] counter attestation: %v", counterAttestation)
+
+	attestationProto := counterAttestationToProto(counterAttestation)
+	//
 
 	kcs.kc.RegisterUser(id, publicKey, xi)
 	kcs.addToHistory(in.Token, in.Ip, in.Port, int(in.Id), publicKey, xi, in,
@@ -655,8 +668,6 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 	for _, v := range kcs.kc.PP.Commitments {
 		commitments = append(commitments, &proto.G1{Point: v.Bytes()})
 	}
-
-	attestationProto := counterAttestationToProto(counterAttestation)
 
 	kcs.registeredIds[id] = true
 	if source == "api" {
@@ -674,9 +685,6 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 	} else {
 		log.Infof("[dev] skip updating system params in etcd, not the leader")
 	}
-
-	proof := kcs.kc.ProveMembership(id)
-	pbProof := &proto.G1{Point: proof.Bytes()}
 
 	return &pb.UserOpeningResponse{Opening: opening, Commitments: commitments,
 		CounterAttestation: attestationProto, Proof: pbProof}, nil
