@@ -5,7 +5,6 @@ package kcclient
 import (
 	"context"
 	"fmt"
-	"math/big"
 	"strconv"
 
 	bls "github.com/cloudflare/circl/ecc/bls12381"
@@ -182,14 +181,14 @@ func (c *KCClient) FetchAllUpdates(pp *rbe.PublicParams) ([]*bls.G1, [][]*bls.G1
 			return nil, nil, nil, fmt.Errorf("%s", errMsg)
 		}
 
-		// ctrAttestation := attestationFromProto(registrationEvent.CounterAttestation)
-		// if trincutil.DoVerifyCounter(regMsg, ctrAttestation) && ctrAttestation.Counter > prevCounter {
-		// 	log.Infof("[dev] attestation verified successfully")
-		// 	prevCounter = ctrAttestation.Counter
-		// } else {
-		// 	log.Errorf("[dev] failure: attestation has an invalid signature")
-		// 	return nil, nil, nil, fmt.Errorf("[dev] attestation has an invalid signature")
-		// }
+		ctrAttestation := trincutil.AttestationFromProto(registrationEvent.CounterAttestation)
+		if trincutil.DoVerifyCounter(regMsg, ctrAttestation) && ctrAttestation.Counter > prevCounter {
+			log.Infof("[dev] attestation verified successfully")
+			prevCounter = ctrAttestation.Counter
+		} else {
+			log.Errorf("[dev] failure: attestation has an invalid signature")
+			return nil, nil, nil, fmt.Errorf("[dev] attestation has an invalid signature")
+		}
 		// save the index upto which last successful verification was done
 		// save the counter upto which last successful verification was don
 		// save the index upto which the registration history was fetched
@@ -198,19 +197,7 @@ func (c *KCClient) FetchAllUpdates(pp *rbe.PublicParams) ([]*bls.G1, [][]*bls.G1
 	return commitments, openings, allRbeIds, nil
 }
 
-func attestationFromProto(attestationPb *pb.CounterAttestation) *trinc.CounterAttestation {
-	attestation := &trinc.CounterAttestation{}
-	if attestationPb != nil {
-		attestation.Counter = attestationPb.GetCounter()
-		attestation.MsgHash = attestationPb.GetMsgHash()
-		attestation.Signature = &trinc.ECDSASignature{
-			R: new(big.Int).SetBytes(attestationPb.GetSignature().GetR()),
-			S: new(big.Int).SetBytes(attestationPb.GetSignature().GetS()),
-		}
-	}
-	return attestation
-}
-
+// func (c *KCClient) FetchUpdate(id int64) ([]*bls.G1, []*bls.G1, error) {
 func (c *KCClient) FetchUpdate(id int64) ([]*bls.G1, []*bls.G1, *bls.G1, error) {
 	updReq := &pb.UpdateRequest{
 		Id: id,
@@ -223,13 +210,13 @@ func (c *KCClient) FetchUpdate(id int64) ([]*bls.G1, []*bls.G1, *bls.G1, error) 
 		return nil, nil, nil, err
 	}
 
-	commitments, opening, _, proof := getCommitmentsOpenings(updResp)
+	commitments, opening, _, proof := parseUserRegistrationResponse(updResp)
 
 	return commitments, opening, proof, nil
 }
 
 // TODO: change/update name for this function
-func getCommitmentsOpenings(uoResp *pb.UserOpeningResponse) ([]*bls.G1,
+func parseUserRegistrationResponse(uoResp *pb.UserOpeningResponse) ([]*bls.G1,
 	[]*bls.G1, *trinc.CounterAttestation, *bls.G1) {
 
 	commitments := []*bls.G1{}
@@ -246,7 +233,7 @@ func getCommitmentsOpenings(uoResp *pb.UserOpeningResponse) ([]*bls.G1,
 		opening = append(opening, g1)
 	}
 
-	// attestation := attestationFromProto(uoResp.GetCounterAttestation())
+	attestation := trincutil.AttestationFromProto(uoResp.GetCounterAttestation())
 
 	proof := &bls.G1{}
 	proof.SetBytes(uoResp.GetProof().GetPoint())
@@ -285,14 +272,23 @@ func (c *KCClient) RegisterUser(user *rbe.User, rbeId *security.RbeId) ([]*bls.G
 		log.Errorf("[dev] err on RegisterUser(): %v", err)
 		return nil, nil, nil, err
 	}
-	commitments, opening, _, proof := getCommitmentsOpenings(regR)
-	_, err = proto.Marshal(regReq)
+	commitments, opening, ctrAttestation, proof := parseUserRegistrationResponse(regR)
+
+	// verifying counter attestation here
+	regMsg, err := proto.Marshal(regReq)
 	if err != nil {
 		log.Errorf("[dev] error marshalling register request: %v", err)
 	}
 
-	// if trincutil.DoVerifyCounter(regMsg, ctrAttestation) {
-	// 	log.Infof("[dev] attestation verified successfully")
+	pbProof := regR.GetProof()
+	proofBytes, err := proto.Marshal(pbProof)
+	if err != nil {
+		log.Errorf("[dev] error marshalling proof: %v", err)
+	}
+
+	attestUserData := append(regMsg, proofBytes...)
+	if trincutil.DoVerifyCounter(attestUserData, ctrAttestation) {
+		log.Infof("[dev] attestation verified successfully")
 
 	// 	// save the current attestation
 	// 	err = ctrAttestation.ToFile(CTR_ATTESTATION_PATH)

@@ -23,6 +23,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+type RegisteredUserWithProof struct {
+	ProofBytes       []byte
+	AttestationBytes []byte
+	RequestBytes     []byte
+}
+
 func GenerateNonce() (string, error) {
 	nonceBytes := make([]byte, 32)
 	_, err := rand.Read(nonceBytes)

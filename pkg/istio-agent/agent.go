@@ -481,10 +481,10 @@ func (a *Agent) getRbeUserId() (*security.RbeId, error) {
 	if err != nil {
 		log.Errorf("failed to generate bootstrap metadata: %v", err)
 	}
-	log.Infof("[dev] where is the port for ingress gateways: %+v", node.Metadata)
+	// log.Infof("[dev] where is the port for ingress gateways: %+v", node.Metadata)
 	// ingress gateway doesn't have the pod ports set
 	port := 443 // default port
-	log.Infof("[dev] pod ports: %+v", node.Metadata.PodPorts)
+	// log.Infof("[dev] pod ports: %+v", node.Metadata.PodPorts)
 	if len(node.Metadata.PodPorts) > 0 {
 		podPort := node.Metadata.PodPorts[0]
 		port = podPort.ContainerPort
@@ -555,6 +555,7 @@ func (a *Agent) initSdsServer() error {
 			a.secretCache.GetWatchSystemParams()
 			go a.secretCache.UpdatePodValidationWithOpening()
 			go a.secretCache.UpdatePodValidationWithUser()
+			go a.secretCache.VerifyRegisteredUser()
 
 			// TODO: enable this to renew certificates before they expire
 			// TODO: how would you handle unregistering ids from key curator?

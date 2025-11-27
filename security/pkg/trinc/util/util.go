@@ -2,9 +2,11 @@ package trincutil
 
 import (
 	"crypto/sha256"
+	"math/big"
 
 	"github.com/etclab/trinc"
 	"istio.io/istio/pkg/log"
+	pb "istio.io/istio/security/pkg/key-curator/key-curator"
 )
 
 const TPM_SK_PATH = "/etc/tpm-keys/privateKey"
@@ -42,6 +44,19 @@ func DoAttestCounter(msg []byte) (attestation *trinc.CounterAttestation, err err
 		log.Errorf("[dev] error: can't generate attestation: %v", err)
 	}
 	return attestation, err
+}
+
+func AttestationFromProto(attestationPb *pb.CounterAttestation) *trinc.CounterAttestation {
+	attestation := &trinc.CounterAttestation{}
+	if attestationPb != nil {
+		attestation.Counter = attestationPb.GetCounter()
+		attestation.MsgHash = attestationPb.GetMsgHash()
+		attestation.Signature = &trinc.ECDSASignature{
+			R: new(big.Int).SetBytes(attestationPb.GetSignature().GetR()),
+			S: new(big.Int).SetBytes(attestationPb.GetSignature().GetS()),
+		}
+	}
+	return attestation
 }
 
 // func doAttestNVPCR(skFile, msgFile, attestationFile string) {

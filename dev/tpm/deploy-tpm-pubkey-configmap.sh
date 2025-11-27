@@ -5,7 +5,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # Create a ConfigMap with the public key in each namespace
 # NAMESPACES=$(kubectl get ns -o jsonpath='{.items[*].metadata.name}')
-NAMESPACES=(default)
+NAMESPACES=(default istio-system)
 
 for NAMESPACE in $NAMESPACES; do
   kubectl delete configmap tpm-pubkey -n $NAMESPACE
