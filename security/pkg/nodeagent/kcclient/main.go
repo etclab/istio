@@ -5,7 +5,6 @@ package kcclient
 import (
 	"context"
 	"fmt"
-	"math/big"
 	"strconv"
 
 	bls "github.com/cloudflare/circl/ecc/bls12381"
@@ -183,7 +182,7 @@ func (c *KCClient) FetchAllUpdates(pp *rbe.PublicParams) ([]*bls.G1, [][]*bls.G1
 			return nil, nil, nil, fmt.Errorf("%s", errMsg)
 		}
 
-		ctrAttestation := attestationFromProto(registrationEvent.CounterAttestation)
+		ctrAttestation := trincutil.AttestationFromProto(registrationEvent.CounterAttestation)
 		if trincutil.DoVerifyCounter(regMsg, ctrAttestation) && ctrAttestation.Counter > prevCounter {
 			log.Infof("[dev] attestation verified successfully")
 			prevCounter = ctrAttestation.Counter
@@ -197,19 +196,6 @@ func (c *KCClient) FetchAllUpdates(pp *rbe.PublicParams) ([]*bls.G1, [][]*bls.G1
 	}
 
 	return commitments, openings, allRbeIds, nil
-}
-
-func attestationFromProto(attestationPb *pb.CounterAttestation) *trinc.CounterAttestation {
-	attestation := &trinc.CounterAttestation{}
-	if attestationPb != nil {
-		attestation.Counter = attestationPb.GetCounter()
-		attestation.MsgHash = attestationPb.GetMsgHash()
-		attestation.Signature = &trinc.ECDSASignature{
-			R: new(big.Int).SetBytes(attestationPb.GetSignature().GetR()),
-			S: new(big.Int).SetBytes(attestationPb.GetSignature().GetS()),
-		}
-	}
-	return attestation
 }
 
 // func (c *KCClient) FetchUpdate(id int64) ([]*bls.G1, []*bls.G1, error) {
@@ -248,7 +234,7 @@ func parseUserRegistrationResponse(uoResp *pb.UserOpeningResponse) ([]*bls.G1,
 		opening = append(opening, g1)
 	}
 
-	attestation := attestationFromProto(uoResp.GetCounterAttestation())
+	attestation := trincutil.AttestationFromProto(uoResp.GetCounterAttestation())
 
 	proof := &bls.G1{}
 	proof.SetBytes(uoResp.GetProof().GetPoint())

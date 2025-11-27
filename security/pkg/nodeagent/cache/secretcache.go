@@ -36,6 +36,7 @@ import (
 	"unsafe"
 
 	"github.com/etclab/rbe"
+	"github.com/etclab/trinc"
 	"github.com/fsnotify/fsnotify"
 	clientv3 "go.etcd.io/etcd/client/v3"
 
@@ -57,6 +58,7 @@ import (
 	"istio.io/istio/security/pkg/monitoring"
 	nodeagentutil "istio.io/istio/security/pkg/nodeagent/util"
 	pkiutil "istio.io/istio/security/pkg/pki/util"
+	trincutil "istio.io/istio/security/pkg/trinc/util"
 )
 
 var (
@@ -113,6 +115,7 @@ type SecretManagerClient struct {
 	kcClient security.KeyCuratorClient
 
 	lastCommitmentsUpdate atomic.Value
+	lastCounterValue      atomic.Value
 
 	resetOpeningsChan chan bool
 
@@ -139,6 +142,21 @@ type SecretManagerClient struct {
 
 	regUsers   map[string]*RegisteredUser
 	muRegUsers sync.RWMutex
+
+	// holds the `rbe-user/<user-id>` keys that needs proofs to be verified
+	userVerificationChan chan string
+	// proof verification for multiple users can fail so track them
+	// hold keys here until proof is verified
+	// since a single function is going to process these, no mutex is needed
+	unverifiedUsersList []string
+	isUserVerified      map[string]bool
+	muIsUserVerified    sync.RWMutex
+
+	userRegProofs   map[string]*bls.G1
+	muUserRegProofs sync.RWMutex
+
+	userRegAttestations   map[string]*trinc.CounterAttestation
+	muUserRegAttestations sync.RWMutex
 
 	etcdClient *clientv3.Client
 
@@ -288,6 +306,8 @@ func NewSecretManagerClient(caClient security.Client, options *security.Options)
 		caRootPath:             options.CARootPath,
 		receivedOpeningKeyChan: make(chan string, 100),
 		receivedUserKeyChan:    make(chan string, 100),
+
+		userVerificationChan: make(chan string, 100),
 	}
 
 	go ret.queue.Run(ret.stop)
@@ -944,12 +964,189 @@ func (sc *SecretManagerClient) checkPodValidity(rbeId *security.RbeId,
 	return nonceHash.IsEqual(decryptedNonce)
 }
 
+func (sc *SecretManagerClient) isPPAvailable() bool {
+	sc.muRbePp.RLock()
+	defer sc.muRbePp.RUnlock()
+	return sc.rbePp != nil
+}
+
+func (sc *SecretManagerClient) userExists(keyStr string) bool {
+	sc.muRegUsers.RLock()
+	defer sc.muRegUsers.RUnlock()
+
+	_, exists := sc.regUsers[keyStr]
+	return exists
+}
+
+func (sc *SecretManagerClient) proofExists(keyStr string) bool {
+	sc.muUserRegProofs.RLock()
+	defer sc.muUserRegProofs.RUnlock()
+
+	_, exists := sc.userRegProofs[keyStr]
+	return exists
+}
+
+func (sc *SecretManagerClient) attestationExists(keyStr string) bool {
+	sc.muUserRegAttestations.RLock()
+	defer sc.muUserRegAttestations.RUnlock()
+
+	_, exists := sc.userRegAttestations[keyStr]
+	return exists
+}
+
+func (sc *SecretManagerClient) verifyRbeUser(keyStr string, userId string) (bool, error) {
+
+	// check if we have required data
+	if !sc.isPPAvailable() {
+		return false, fmt.Errorf("[dev] public parameters not available yet")
+	}
+
+	if !sc.userExists(keyStr) {
+		return false, fmt.Errorf("[dev] user with key %s not found in registered users", keyStr)
+	}
+
+	if !sc.proofExists(keyStr) {
+		return false, fmt.Errorf("[dev] proof for user with key %s not found in registered user proofs", keyStr)
+	}
+
+	if !sc.attestationExists(keyStr) {
+		return false, fmt.Errorf("[dev] attestation for user with key %s not found in registered user attestations", keyStr)
+	}
+
+	sc.muRbePp.RLock()
+	defer sc.muRbePp.RUnlock()
+
+	sc.muRegUsers.RLock()
+	defer sc.muRegUsers.RUnlock()
+
+	sc.muUserRegProofs.RLock()
+	defer sc.muUserRegProofs.RUnlock()
+
+	sc.muUserRegAttestations.RLock()
+	defer sc.muUserRegAttestations.RUnlock()
+
+	proof := sc.userRegProofs[keyStr]
+	user := sc.regUsers[keyStr]
+	pubKey := user.PublicKey
+	id := int(user.Id)
+
+	// membership proof verification
+	isVerified := rbe.VerifyMembership(sc.rbePp, id, pubKey, proof)
+	if isVerified {
+		log.Infof("[dev] membership verified successfully for %s", keyStr)
+	} else {
+		return false, fmt.Errorf("[dev] membership verification failed for %s", keyStr)
+	}
+
+	// attestation verification
+	pbProof := &proto.G1{Point: proof.Bytes()}
+	pbProofBytes, err := gproto.Marshal(pbProof)
+	if err != nil {
+		log.Errorf("[dev] error marshalling proof: %v", err)
+	}
+	regMsg := &kproto.RegisterRequest{
+		Id:        user.Id,
+		Ip:        user.Ip,
+		Port:      user.Port,
+		Token:     user.Token,
+		PublicKey: &proto.G1{Point: pubKey.Bytes()},
+	}
+
+	xiProto := []*proto.G1{}
+	for _, xiElem := range user.Xi {
+		if xiElem == nil {
+			xiProto = append(xiProto, nil)
+		} else {
+			xiProto = append(xiProto, &proto.G1{Point: xiElem.Bytes()})
+		}
+	}
+	regMsg.Xi = xiProto
+
+	regMsgBytes, err := gproto.Marshal(regMsg)
+	if err != nil {
+		log.Errorf("[dev] error marshalling RegisterRequest: %v", err)
+	}
+
+	attestUserData := append(regMsgBytes, pbProofBytes...)
+
+	attestation := sc.userRegAttestations[keyStr]
+	if trincutil.DoVerifyCounter(attestUserData, attestation) {
+		if sc.lastCounterValue.Load() != nil &&
+			attestation.Counter <= sc.lastCounterValue.Load().(uint64) {
+			log.Errorf("[dev] attestation has a stale counter value: %d, last counter: %d",
+				attestation.Counter, sc.lastCounterValue.Load().(uint64))
+		} else {
+			sc.lastCounterValue.Store(attestation.Counter)
+		}
+	} else {
+		return false, fmt.Errorf("[dev] attestation has an invalid signature")
+	}
+
+	return true, nil
+}
+
+// validates the RBE proof and attestation info of a registered user
+func (sc *SecretManagerClient) VerifyRegisteredUser() {
+	for keyStr := range sc.userVerificationChan {
+		log.Infof("[dev] VerifyRegisteredUser: received key: %s from channel", keyStr)
+
+		// keyStr has format: rbe-user/<user-id>
+		parts := strings.Split(keyStr, "/")
+		if len(parts) != 2 {
+			log.Errorf("[dev] invalid key format for user key: %s", keyStr)
+			continue
+		}
+		userId := parts[1]
+		log.Infof("[dev] verifying user with id: %s", userId)
+
+		verified, err := sc.verifyRbeUser(keyStr, userId)
+		if err != nil {
+			log.Errorf("[dev] error verifying RBE user %s: %v", userId, err)
+			sc.unverifiedUsersList = append(sc.unverifiedUsersList, keyStr)
+			continue
+		}
+		if verified {
+			log.Infof("[dev] RBE user %s verified successfully", userId)
+			go sc.markUserAsVerified(userId)
+		}
+
+		go func() {
+			if len(sc.unverifiedUsersList) > 0 {
+				first, rest := sc.unverifiedUsersList[0], sc.unverifiedUsersList[1:]
+				sc.unverifiedUsersList = rest
+				log.Infof("[dev] re-queuing unverified user key: %s for verification", first)
+				sc.userVerificationChan <- first
+			}
+		}()
+	}
+}
+
+func (sc *SecretManagerClient) markUserAsVerified(userId string) {
+	sc.muIsUserVerified.Lock()
+	defer sc.muIsUserVerified.Unlock()
+
+	if sc.isUserVerified == nil {
+		sc.isUserVerified = make(map[string]bool)
+	}
+	sc.isUserVerified[userId] = true
+
+	log.Infof("[dev] isUserVerified map: %+v", sc.isUserVerified)
+}
+
 func (sc *SecretManagerClient) handleRegisteredUserUpdate(keyStr string, value []byte) error {
-	req := &kproto.RegisterRequest{}
-	err := gproto.Unmarshal([]byte(value), req)
+	regUserWithProofReq := &kcUtil.RegisteredUserWithProof{}
+	err := json.Unmarshal([]byte(value), regUserWithProofReq)
 	if err == nil {
+		regRequestBytes := regUserWithProofReq.RequestBytes
+
+		req := &kproto.RegisterRequest{}
+		err := gproto.Unmarshal([]byte(regRequestBytes), req)
+		if err != nil {
+			return fmt.Errorf("[dev] error unmarshalling RegisterRequest for user %d: %v", req.GetId(), err)
+		}
+
 		publicKey := new(bls.G1)
-		err := publicKey.SetBytes(req.PublicKey.GetPoint())
+		err = publicKey.SetBytes(req.PublicKey.GetPoint())
 		if err != nil {
 			return fmt.Errorf("[dev] error setting public key for user %d: %v", req.Id, err)
 		}
@@ -981,7 +1178,47 @@ func (sc *SecretManagerClient) handleRegisteredUserUpdate(keyStr string, value [
 		sc.regUsers[keyStr] = registeredUser
 		sc.muRegUsers.Unlock()
 
+		// proof
+		proofBytes := regUserWithProofReq.ProofBytes
+		proofProto := &proto.G1{}
+		err = gproto.Unmarshal([]byte(proofBytes), proofProto)
+		if err != nil {
+			return fmt.Errorf("[dev] error unmarshalling proof for user %s: %v", keyStr, err)
+		}
+		proof := new(bls.G1)
+		err = proof.SetBytes(proofProto.GetPoint())
+		if err != nil {
+			return fmt.Errorf("[dev] error setting proof for user %s: %v", keyStr, err)
+		}
+		// save proof
+		sc.muUserRegProofs.Lock()
+		if sc.userRegProofs == nil {
+			sc.userRegProofs = make(map[string]*bls.G1)
+		}
+		sc.userRegProofs[keyStr] = proof
+		sc.muUserRegProofs.Unlock()
+
+		// attestation
+		attestationBytes := regUserWithProofReq.AttestationBytes
+		attestationProto := &kproto.CounterAttestation{}
+		err = gproto.Unmarshal([]byte(attestationBytes), attestationProto)
+		if err != nil {
+			return fmt.Errorf("[dev] error unmarshalling attestation for user %s: %v", keyStr, err)
+		}
+		attestation := trincutil.AttestationFromProto(attestationProto)
+
+		// save attestation data
+		sc.muUserRegAttestations.Lock()
+		if sc.userRegAttestations == nil {
+			sc.userRegAttestations = make(map[string]*trinc.CounterAttestation)
+		}
+		sc.userRegAttestations[keyStr] = attestation
+		sc.muUserRegAttestations.Unlock()
+
 		log.Infof("[dev] saved registered user for key: %s", keyStr)
+
+		// now queue the user for verification
+		sc.userVerificationChan <- keyStr
 	} else {
 		return fmt.Errorf("[dev] error unmarshalling request for user %s: %v", keyStr, err)
 	}
@@ -1305,6 +1542,7 @@ func (sc *SecretManagerClient) handleCommitmentsUpdate(key string, value []byte,
 	return nil
 }
 
+// unused
 func (sc *SecretManagerClient) UpdateUserOpenings() {
 	rbeSecret := sc.GetRbeCachedSecret(security.WorkloadRbeIdentityCertResourceName)
 

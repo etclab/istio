@@ -2,6 +2,7 @@ package keycurator
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"strconv"
@@ -131,6 +132,7 @@ func (kcs *KeyCuratorServer) initEtcdWithRetry() {
 	}
 }
 
+// TODO: if I'm not the leader, I should always restore public params from etcd
 // if there's existing public params in etcd, restore them
 // if not update the public params in etcd with the current ones
 func (kcs *KeyCuratorServer) restoreSystemParams() {
@@ -276,16 +278,28 @@ func (kcs *KeyCuratorServer) fetchExistingUsers() int64 {
 	for _, kv := range getRes.Kvs {
 		value := kv.Value
 
-		req := &pb.RegisterRequest{}
-		err := gproto.Unmarshal([]byte(value), req)
+		regUserWithProofReq := &keycurator.RegisteredUserWithProof{}
+		err := json.Unmarshal([]byte(value), regUserWithProofReq)
 		if err == nil {
-			id := int(req.Id)
+			// user request
+			regRequestBytes := regUserWithProofReq.RequestBytes
+
+			regRequest := &pb.RegisterRequest{}
+			err := gproto.Unmarshal([]byte(regRequestBytes), regRequest)
+			if err != nil {
+				log.Errorf("[dev] error unmarshalling RegisterRequest for user %d: %v", regRequest.GetId(), err)
+				continue
+			}
+
+			id := int(regRequest.Id)
 			userReq := UserRequest{
 				id:       id,
-				req:      req,
+				req:      regRequest,
 				source:   "etcd",
 				respChan: make(chan *pb.UserOpeningResponse, 1),
 			}
+
+			// node agent will verify the proof and counter attestation
 
 			kcs.registrationQueue <- userReq
 
@@ -360,12 +374,21 @@ func (kcs *KeyCuratorServer) watchForNewUsers(currentRevision int64) {
 						log.Infof("[dev] user with id %d is already registered, skipping", id)
 					} else {
 						// finally add user to your id space
-						req := &pb.RegisterRequest{}
-						err := gproto.Unmarshal([]byte(value), req)
+						regUserWithProofReq := &keycurator.RegisteredUserWithProof{}
+						err := json.Unmarshal([]byte(value), regUserWithProofReq)
 						if err == nil {
+							// user request
+							regRequestBytes := regUserWithProofReq.RequestBytes
+							regRequest := &pb.RegisterRequest{}
+							err := gproto.Unmarshal([]byte(regRequestBytes), regRequest)
+							if err != nil {
+								log.Errorf("[dev] error unmarshalling RegisterRequest for user %d: %v", regRequest.GetId(), err)
+								continue
+							}
+
 							userReq := UserRequest{
 								id:       id,
-								req:      req,
+								req:      regRequest,
 								source:   "etcd",
 								respChan: make(chan *pb.UserOpeningResponse, 1),
 							}
@@ -416,14 +439,14 @@ func (kcs *KeyCuratorServer) listenRegistrationRequests() {
 
 // StoreAtEtcd sends request to etcd server to store the user id and the
 // exact user request
-func (kcs *KeyCuratorServer) StoreAtEtcd(id int, req *pb.RegisterRequest) {
+func (kcs *KeyCuratorServer) StoreAtEtcd(id int, req *keycurator.RegisteredUserWithProof) {
 	if kcs.EtcdClient == nil {
 		log.Warnf("[dev] etcd client is not initialized, cannot store user")
 		return
 	}
 
 	key := fmt.Sprintf("%s/%d", kconstants.RBE_USER_PREFIX, id)
-	value, err := gproto.Marshal(req)
+	value, err := json.Marshal(req)
 	if err != nil {
 		log.Errorf("[dev] failed to marshal request for user %d: %v", id, err)
 		return
@@ -638,12 +661,12 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 
 	proof := kcs.kc.ProveMembership(id)
 	pbProof := &proto.G1{Point: proof.Bytes()}
-	pbProtoBytes, err := gproto.Marshal(pbProof)
+	pbProofBytes, err := gproto.Marshal(pbProof)
 	if err != nil {
 		log.Errorf("[dev] error marshalling proof: %v", err)
 	}
 
-	attestUserData := append(regMsg, pbProtoBytes...)
+	attestUserData := append(regMsg, pbProofBytes...)
 
 	counterAttestation, err := trincutil.DoAttestCounter(attestUserData)
 	if err != nil {
@@ -653,6 +676,17 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 	log.Infof("[dev] counter attestation: %v", counterAttestation)
 
 	attestationProto := counterAttestationToProto(counterAttestation)
+
+	attestationProtoBytes, err := gproto.Marshal(attestationProto)
+	if err != nil {
+		log.Errorf("[dev] error marshalling counter attestation: %v", err)
+	}
+
+	registeredUserWithProof := &keycurator.RegisteredUserWithProof{
+		ProofBytes:       pbProofBytes,
+		AttestationBytes: attestationProtoBytes,
+		RequestBytes:     regMsg,
+	}
 	//
 
 	kcs.kc.RegisterUser(id, publicKey, xi)
@@ -674,9 +708,7 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 		// only send to etcd if registering a new user via API
 		// this means only this instance of istiod received this request
 		// so we need to sent it to etcd so that other instances can pick it up
-		kcs.StoreAtEtcd(id, in)
-		// save to history also stores the user info in etcd
-		kcs.SaveToHistory(id, in)
+		kcs.StoreAtEtcd(id, registeredUserWithProof)
 	}
 	// send updates on every registration
 	if kcs.isLeader.Load() {
@@ -705,11 +737,6 @@ func (kcs *KeyCuratorServer) UpdateSystemParamsInEtcd() {
 		log.Errorf("[dev] failed to store user openings in etcd: %v", err)
 		return
 	}
-}
-
-func (kcs *KeyCuratorServer) SaveToHistory(id int, req *pb.RegisterRequest) {
-	// TODO: store user into etcd history
-	log.Infof("[dev] stored user %d in etcd", id)
 }
 
 func (kcs *KeyCuratorServer) RegisterUser(_ context.Context, in *pb.RegisterRequest) (*pb.UserOpeningResponse, error) {
