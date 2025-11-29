@@ -171,8 +171,8 @@ func (cb *ClusterBuilder) buildUpstreamClusterTLSContext(opts *buildClusterOpts,
 		if cb.proxyLabels["app"] == "istio-ingressgateway" {
 			isIngressProxy = true
 		}
-		log.Infof("[dev] isIngressProxy: %v", isIngressProxy)
-		log.Infof("[dev] opts.serviceAccounts %+v", opts.serviceAccounts)
+		// log.Infof("[dev] isIngressProxy: %v", isIngressProxy)
+		// log.Infof("[dev] opts.serviceAccounts %+v", opts.serviceAccounts)
 
 		// FIXME: services/proxies CAN BE in namespaces other than default
 		// if we're building cluster for a sidecar proxy

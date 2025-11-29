@@ -1,6 +1,7 @@
 package trincutil
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"math/big"
 
@@ -90,36 +91,35 @@ func AttestationFromProto(attestationPb *pb.CounterAttestation) *trinc.CounterAt
 // 	}
 // }
 
-// DoVerifyCounter is disabled
-// func DoVerifyCounter(msgBytes []byte, attestation *trinc.CounterAttestation) bool {
-// 	if attestation == nil || msgBytes == nil {
-// 		log.Errorf("[dev] error: attestation or msgBytes is nil")
-// 		return false
-// 	}
+func DoVerifyCounter(msgBytes []byte, attestation *trinc.CounterAttestation) bool {
+	if attestation == nil || msgBytes == nil {
+		log.Errorf("[dev] error: attestation or msgBytes is nil")
+		return false
+	}
 
-// 	pk, err := trinc.LoadECDSAPublicKeyFromPEMFile(TPM_PK_PATH)
-// 	if err != nil {
-// 		log.Errorf("[dev] error: can't read public key file %q: %v", TPM_PK_PATH, err)
-// 		return false
-// 	}
-// 	log.Infof("[dev] Read TPM_PK_PATH %v", pk)
+	pk, err := trinc.LoadECDSAPublicKeyFromPEMFile(TPM_PK_PATH)
+	if err != nil {
+		log.Errorf("[dev] error: can't read public key file %q: %v", TPM_PK_PATH, err)
+		return false
+	}
+	log.Infof("[dev] Read TPM_PK_PATH %v", pk)
 
-// 	msgHash := sha256.Sum256(msgBytes)
+	msgHash := sha256.Sum256(msgBytes)
 
-// 	result := attestation.Verify(pk)
-// 	if !result {
-// 		log.Errorf("[dev] failure: attestation has an invalid signature")
-// 		return false
-// 	}
+	result := attestation.Verify(pk)
+	if !result {
+		log.Errorf("[dev] failure: attestation has an invalid signature")
+		return false
+	}
 
-// 	if !bytes.Equal(attestation.MsgHash, msgHash[:]) {
-// 		log.Errorf("[dev] failure: attestation MsgHash != expected hash")
-// 		return false
-// 	}
+	if !bytes.Equal(attestation.MsgHash, msgHash[:]) {
+		log.Errorf("[dev] failure: attestation MsgHash != expected hash")
+		return false
+	}
 
-// 	log.Infof("[dev] attestation verified successfully")
-// 	return true
-// }
+	log.Infof("[dev] attestation verified successfully")
+	return true
+}
 
 // func doVerifyPCR(pkFile, msgFile, attestationFile string) {
 // 	pk, err := trinc.LoadECDSAPublicKeyFromPEMFile(pkFile)

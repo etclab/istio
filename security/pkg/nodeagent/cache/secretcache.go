@@ -1005,11 +1005,13 @@ func (sc *SecretManagerClient) verifyRbeUser(keyStr string, userId string) (bool
 		return false, fmt.Errorf("[dev] user with key %s not found in registered users", keyStr)
 	}
 
-	if !sc.proofExists(keyStr) {
+	isRbeProofEnabled := kcUtil.IsRbeProofEnabled()
+	if isRbeProofEnabled && !sc.proofExists(keyStr) {
 		return false, fmt.Errorf("[dev] proof for user with key %s not found in registered user proofs", keyStr)
 	}
 
-	if !sc.attestationExists(keyStr) {
+	isAttestationEnabled := kcUtil.IsAttestationEnabled()
+	if isAttestationEnabled && !sc.attestationExists(keyStr) {
 		return false, fmt.Errorf("[dev] attestation for user with key %s not found in registered user attestations", keyStr)
 	}
 
@@ -1031,55 +1033,63 @@ func (sc *SecretManagerClient) verifyRbeUser(keyStr string, userId string) (bool
 	id := int(user.Id)
 
 	// membership proof verification
-	isVerified := rbe.VerifyMembership(sc.rbePp, id, pubKey, proof)
-	if isVerified {
-		log.Infof("[dev] membership verified successfully for %s", keyStr)
+	if isRbeProofEnabled {
+		isVerified := rbe.VerifyMembership(sc.rbePp, id, pubKey, proof)
+		if isVerified {
+			log.Infof("[dev] membership verified successfully for %s", keyStr)
+		} else {
+			return false, fmt.Errorf("[dev] membership verification failed for %s", keyStr)
+		}
 	} else {
-		return false, fmt.Errorf("[dev] membership verification failed for %s", keyStr)
+		log.Infof("[dev] RBE proof verification for %s is disabled", keyStr)
 	}
 
 	// attestation verification
-	pbProof := &proto.G1{Point: proof.Bytes()}
-	pbProofBytes, err := gproto.Marshal(pbProof)
-	if err != nil {
-		log.Errorf("[dev] error marshalling proof: %v", err)
-	}
-	regMsg := &kproto.RegisterRequest{
-		Id:        user.Id,
-		Ip:        user.Ip,
-		Port:      user.Port,
-		Token:     user.Token,
-		PublicKey: &proto.G1{Point: pubKey.Bytes()},
-	}
-
-	xiProto := []*proto.G1{}
-	for _, xiElem := range user.Xi {
-		if xiElem == nil {
-			xiProto = append(xiProto, nil)
-		} else {
-			xiProto = append(xiProto, &proto.G1{Point: xiElem.Bytes()})
+	if isAttestationEnabled {
+		pbProof := &proto.G1{Point: proof.Bytes()}
+		pbProofBytes, err := gproto.Marshal(pbProof)
+		if err != nil {
+			log.Errorf("[dev] error marshalling proof: %v", err)
 		}
-	}
-	regMsg.Xi = xiProto
+		regMsg := &kproto.RegisterRequest{
+			Id:        user.Id,
+			Ip:        user.Ip,
+			Port:      user.Port,
+			Token:     user.Token,
+			PublicKey: &proto.G1{Point: pubKey.Bytes()},
+		}
 
-	regMsgBytes, err := gproto.Marshal(regMsg)
-	if err != nil {
-		log.Errorf("[dev] error marshalling RegisterRequest: %v", err)
-	}
+		xiProto := []*proto.G1{}
+		for _, xiElem := range user.Xi {
+			if xiElem == nil {
+				xiProto = append(xiProto, nil)
+			} else {
+				xiProto = append(xiProto, &proto.G1{Point: xiElem.Bytes()})
+			}
+		}
+		regMsg.Xi = xiProto
 
-	attestUserData := append(regMsgBytes, pbProofBytes...)
+		regMsgBytes, err := gproto.Marshal(regMsg)
+		if err != nil {
+			log.Errorf("[dev] error marshalling RegisterRequest: %v", err)
+		}
 
-	attestation := sc.userRegAttestations[keyStr]
-	if trincutil.DoVerifyCounter(attestUserData, attestation) {
-		if sc.lastCounterValue.Load() != nil &&
-			attestation.Counter <= sc.lastCounterValue.Load().(uint64) {
-			log.Errorf("[dev] attestation has a stale counter value: %d, last counter: %d",
-				attestation.Counter, sc.lastCounterValue.Load().(uint64))
+		attestUserData := append(regMsgBytes, pbProofBytes...)
+
+		attestation := sc.userRegAttestations[keyStr]
+		if trincutil.DoVerifyCounter(attestUserData, attestation) {
+			if sc.lastCounterValue.Load() != nil &&
+				attestation.Counter <= sc.lastCounterValue.Load().(uint64) {
+				log.Errorf("[dev] attestation has a stale counter value: %d, last counter: %d",
+					attestation.Counter, sc.lastCounterValue.Load().(uint64))
+			} else {
+				sc.lastCounterValue.Store(attestation.Counter)
+			}
 		} else {
-			sc.lastCounterValue.Store(attestation.Counter)
+			return false, fmt.Errorf("[dev] attestation has an invalid signature")
 		}
 	} else {
-		return false, fmt.Errorf("[dev] attestation has an invalid signature")
+		log.Infof("[dev] attestation verification for %s is disabled", keyStr)
 	}
 
 	return true, nil
@@ -1743,6 +1753,8 @@ func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(rbeId *security.RbeId,
 
 		// set the new commitments
 		pp.Commitments = commitments
+		user.Update(commitments, opening)
+
 		if rbe.VerifyMembership(pp, user.Id(), user.PublicKey(), proof) {
 			log.Infof("[dev] proof verified successfully")
 		} else {

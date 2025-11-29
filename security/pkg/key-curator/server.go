@@ -29,6 +29,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 	gproto "google.golang.org/protobuf/proto"
 	kconstants "istio.io/istio/security/pkg/key-curator/constants"
+	kcUtil "istio.io/istio/security/pkg/key-curator/util"
 )
 
 // for lack of a better name using the prefix "history"
@@ -656,32 +657,55 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 	}
 
 	//
-	regMsg, err := gproto.Marshal(in)
+	isRbeProofEnabled := kcUtil.IsRbeProofEnabled()
+	isAttestationEnabled := kcUtil.IsAttestationEnabled()
+
+	var pbProofBytes []byte
+	var proof *bls.G1
+	var err error
+	var pbProof *proto.G1
+
+	if isRbeProofEnabled || isAttestationEnabled {
+		log.Infof("[dev] RBE proof generation is enabled")
+
+		proof = kcs.kc.ProveMembership(id)
+		pbProof = &proto.G1{Point: proof.Bytes()}
+		pbProofBytes, err = gproto.Marshal(pbProof)
+		if err != nil {
+			log.Errorf("[dev] error marshalling proof: %v", err)
+		}
+	}
+
+	var regMsg []byte
+	regMsg, err = gproto.Marshal(in)
 	if err != nil {
 		log.Errorf("[dev] error marshalling register request: %v", err)
 	}
 
-	proof := kcs.kc.ProveMembership(id)
-	pbProof := &proto.G1{Point: proof.Bytes()}
-	pbProofBytes, err := gproto.Marshal(pbProof)
-	if err != nil {
-		log.Errorf("[dev] error marshalling proof: %v", err)
-	}
+	var attestationProtoBytes []byte
+	var counterAttestation *trinc.CounterAttestation
+	var attestationProto *pb.CounterAttestation
 
-	attestUserData := append(regMsg, pbProofBytes...)
+	if isAttestationEnabled {
+		log.Infof("[dev] counter attestation generation is enabled")
 
-	counterAttestation, err := trincutil.DoAttestCounter(attestUserData)
-	if err != nil {
-		log.Errorf("[dev] error generating counter attestation: %v", err)
-	}
-	kcs.attestations[id] = counterAttestation
-	log.Infof("[dev] counter attestation: %v", counterAttestation)
+		attestUserData := append(regMsg, pbProofBytes...)
 
-	attestationProto := counterAttestationToProto(counterAttestation)
+		counterAttestation, err = trincutil.DoAttestCounter(attestUserData)
+		if err != nil {
+			log.Errorf("[dev] error generating counter attestation: %v", err)
+		}
+		kcs.attestations[id] = counterAttestation
+		log.Infof("[dev] counter attestation: %v", counterAttestation)
 
-	attestationProtoBytes, err := gproto.Marshal(attestationProto)
-	if err != nil {
-		log.Errorf("[dev] error marshalling counter attestation: %v", err)
+		attestationProto = counterAttestationToProto(counterAttestation)
+
+		attestationProtoBytes, err = gproto.Marshal(attestationProto)
+		if err != nil {
+			log.Errorf("[dev] error marshalling counter attestation: %v", err)
+		}
+	} else {
+		log.Infof("[dev] counter attestation generation is disabled")
 	}
 
 	registeredUserWithProof := &keycurator.RegisteredUserWithProof{
@@ -692,10 +716,8 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 	//
 
 	kcs.kc.RegisterUser(id, publicKey, xi)
-	// kcs.addToHistory(in.Token, in.Ip, in.Port, int(in.Id), publicKey, xi, in,
-	// 	source, counterAttestation)
 	kcs.addToHistory(in.Token, in.Ip, in.Port, int(in.Id), publicKey, xi, in,
-		source, nil)
+		source, counterAttestation)
 
 	opening := []*proto.G1{}
 	for _, v := range kcs.kc.UserOpenings[id] {
@@ -723,7 +745,7 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 	}
 
 	return &pb.UserOpeningResponse{Opening: opening, Commitments: commitments,
-		CounterAttestation: nil, Proof: pbProof}, nil
+		CounterAttestation: attestationProto, Proof: pbProof}, nil
 }
 
 func (kcs *KeyCuratorServer) UpdateSystemParamsInEtcd() {

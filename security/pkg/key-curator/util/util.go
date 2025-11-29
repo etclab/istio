@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/etclab/rbe"
@@ -270,4 +271,44 @@ func CheckPodValidity(rbeId *security.RbeId, secret *security.RbeSecretItem) (re
 	}
 
 	return nonceHash.IsEqual(decryptedNonce)
+}
+
+const MAZU_CONFIG_PATH = "/etc/mazu-config"
+const MAZU_ATTESTATION_ENABLED = "MAZU_ATTESTATION_ENABLED"
+const MAZU_RBE_PROOF_ENABLED = "MAZU_RBE_PROOF_ENABLED"
+
+// looks for MAZU_ATTESTATION_ENABLED file loaded by config map: mazu-config
+// under path: /etc/mazu-config/MAZU_ATTESTATION_ENABLED
+func IsAttestationEnabled() bool {
+	filepath := fmt.Sprintf("%s/%s", MAZU_CONFIG_PATH, MAZU_ATTESTATION_ENABLED)
+	content, err := os.ReadFile(filepath)
+	if err != nil {
+		log.Infof("[dev] attestation is disabled, file %s not found", filepath)
+		return false
+	}
+	if strings.TrimSpace(string(content)) != "true" {
+		log.Infof("[dev] attestation is disabled, with value: %s", string(content))
+		return false
+	} else {
+		log.Infof("[dev] attestation is enabled")
+		return true
+	}
+}
+
+// looks for MAZU_RBE_PROOF_ENABLED file loaded by config map: mazu-config
+// under path: /etc/mazu-config/MAZU_RBE_PROOF_ENABLED
+func IsRbeProofEnabled() bool {
+	filepath := fmt.Sprintf("%s/%s", MAZU_CONFIG_PATH, MAZU_RBE_PROOF_ENABLED)
+	content, err := os.ReadFile(filepath)
+	if err != nil {
+		log.Infof("[dev] RBE proof verification is disabled, file %s not found", filepath)
+		return false
+	}
+	if strings.TrimSpace(string(content)) != "true" {
+		log.Infof("[dev] RBE proof verification is disabled, with value: %s", string(content))
+		return false
+	} else {
+		log.Infof("[dev] RBE proof verification is enabled")
+		return true
+	}
 }
