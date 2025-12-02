@@ -66,6 +66,29 @@ func TryConnectToEtcdWithRetry() (*clientv3.Client, error) {
 	}
 }
 
+func SaveCommitmentBlockToEtcd(etcdClient *clientv3.Client, blockId int, commitment *bls.G1) (int64, error) {
+	rev := int64(-1)
+	pbCommitmentBlock := &proto.G1{
+		Point: commitment.BytesCompressed(),
+	}
+
+	commitmentsBytes, err := gproto.Marshal(pbCommitmentBlock)
+	if err != nil {
+		return rev, fmt.Errorf("[dev] failed to marshal public params commitments: %v", err)
+	}
+
+	rev, err = PutKVToEtcd(etcdClient,
+		fmt.Sprintf("%s/%d", kconstants.RBE_PP_COMMITMENTS_KEY, blockId),
+		commitmentsBytes)
+	if err != nil {
+		return rev, err
+	} else {
+		log.Infof("[dev] saved commitments for block: %d to etcd", blockId)
+	}
+
+	return rev, nil
+}
+
 func SavePublicParamsToEtcd(etcdClient *clientv3.Client, pp *rbe.PublicParams,
 	onlyCommitments bool) (int64, error) {
 
@@ -196,8 +219,20 @@ func PutKVToEtcd(etcdClient *clientv3.Client, key string, value []byte) (int64, 
 
 func SaveUserOpeningsToEtcd(etcdClient *clientv3.Client, registeredIds map[int]bool,
 	openings [][]*bls.G1, commitmentsRev int64) error {
+	// func SaveUserOpeningsToEtcd(etcdClient *clientv3.Client, userId int, pp *rbe.PublicParams,
+	// 	registeredIds map[int]bool, openings [][]*bls.G1, commitmentsRev int64) error {
+
+	// 	newUserBlock := pp.IdToBlock(userId)
 
 	for key, value := range registeredIds {
+		// userBlock := pp.IdToBlock(key)
+
+		// if userBlock != newUserBlock {
+		// 	// only update openings for users in the same block
+		// 	log.Infof("[dev] user %d is in a different block than new user %d", userBlock, newUserBlock)
+		// 	continue
+		// }
+
 		if !value {
 			log.Warnf("[dev] user id %d is not registered, skipping saving its opening", key)
 		} else {

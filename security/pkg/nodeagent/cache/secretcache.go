@@ -113,6 +113,13 @@ type SecretManagerClient struct {
 	kcClient security.KeyCuratorClient
 
 	lastCommitmentsUpdate atomic.Value
+	// tracks the last revision for each block's commitments
+	// data for old revisions are discarded
+	lastRevisionForBlock   map[int]int64
+	muLastRevisionForBlock sync.RWMutex
+
+	lastRevisionForUser   map[int]int64
+	muLastRevisionForUser sync.RWMutex
 
 	resetOpeningsChan chan bool
 
@@ -288,6 +295,8 @@ func NewSecretManagerClient(caClient security.Client, options *security.Options)
 		caRootPath:             options.CARootPath,
 		receivedOpeningKeyChan: make(chan string, 100),
 		receivedUserKeyChan:    make(chan string, 100),
+
+		lastRevisionForBlock: make(map[int]int64),
 	}
 
 	go ret.queue.Run(ret.stop)
@@ -561,6 +570,8 @@ func (sc *SecretManagerClient) trackErroredWaiting(userId string, commRevision s
 		sc.erroredWaiting[commRevision] = make(map[string]bool)
 	}
 	sc.erroredWaiting[commRevision][userId] = true
+
+	log.Infof("[dev] errored waiting map now: %+v", sc.erroredWaiting)
 }
 
 func (sc *SecretManagerClient) retryOneFromErroredWaiting() {
@@ -658,13 +669,13 @@ func (sc *SecretManagerClient) updatePodValidationWithOpeningUtil(userId string,
 	sc.muUserOpenings.RUnlock()
 
 	if len(otherUserOpening) == 0 {
-		log.Warnf("[dev] userOpening not found for other user id: %d", idOtherUser)
+		log.Warnf("[dev] userOpening not found for other user id: %d, commitment revision: %s", idOtherUser, commRevision)
 		go sc.trackErroredWaiting(userId, commRevision)
 		return
 	}
 
 	if len(myOpening) == 0 {
-		log.Warnf("[dev] myOpening not found for this user id: %d", rbeSecret.User.Id())
+		log.Warnf("[dev] myOpening not found for this user id: %d, commitment revision: %s", rbeSecret.User.Id(), commRevision)
 		go sc.trackErroredWaiting(userId, commRevision)
 		return
 	}
@@ -1102,7 +1113,8 @@ func (sc *SecretManagerClient) GetWatchSystemParams() {
 			sc.muRbePp.Unlock()
 		}
 
-		if keyStr == kconstants.RBE_PP_COMMITMENTS_KEY {
+		// if keyStr == kconstants.RBE_PP_COMMITMENTS_KEY {
+		if strings.HasPrefix(keyStr, kconstants.RBE_PP_COMMITMENTS_KEY) {
 			err := sc.handleCommitmentsUpdate(keyStr, value, false, kv.ModRevision)
 			if err != nil {
 				log.Errorf("[dev] failed to handle commitments update: %v", err)
@@ -1123,7 +1135,8 @@ func (sc *SecretManagerClient) GetWatchSystemParams() {
 
 	// watch for updates to commitments
 	go func() {
-		rch := sc.etcdClient.Watch(context.Background(), kconstants.RBE_PP_COMMITMENTS_KEY, clientv3.WithRev(currentRevision+1))
+		rch := sc.etcdClient.Watch(context.Background(), kconstants.RBE_PP_COMMITMENTS_KEY,
+			clientv3.WithPrefix(), clientv3.WithRev(currentRevision+1))
 		for commitResp := range rch {
 			if commitResp.Canceled {
 				log.Warnf("[dev] etcd watch canceled: %v", commitResp.Err())
@@ -1146,6 +1159,17 @@ func (sc *SecretManagerClient) GetWatchSystemParams() {
 					} else {
 						// now use updates after this ModRevision only
 						sc.lastCommitmentsUpdate.Store(ev.Kv.ModRevision)
+
+						// track the last revision for this block
+						sc.muLastRevisionForBlock.Lock()
+						blockIndexStr := strings.Split(key, "/")[3]
+						blockIndex, err := strconv.Atoi(blockIndexStr)
+						if err != nil {
+							log.Errorf("[dev] invalid block index in commitments key: %s", key)
+						} else {
+							sc.lastRevisionForBlock[blockIndex] = ev.Kv.ModRevision
+						}
+						sc.muLastRevisionForBlock.Unlock()
 					}
 				}
 			}
@@ -1266,6 +1290,73 @@ func (sc *SecretManagerClient) handleOpeningsUpdate(keyStr string, value []byte,
 
 func (sc *SecretManagerClient) handleCommitmentsUpdate(key string, value []byte,
 	isWatchedResponse bool, revision int64) error {
+
+	parts := strings.Split(key, "/")
+	if len(parts) == 4 {
+		log.Infof("[dev] this is a commitment update for a single block: %s", key)
+
+		blockIndexStr := parts[3]
+		blockIndex, err := strconv.Atoi(blockIndexStr)
+		if err != nil {
+			return fmt.Errorf("[dev] invalid block index in commitments key: %s", key)
+		}
+
+		commitmentsProto := &proto.G1{}
+		err = gproto.Unmarshal([]byte(value), commitmentsProto)
+		if err != nil {
+			return fmt.Errorf("[dev] failed to unmarshal commitments from etcd: %v", err)
+		}
+
+		commitment := new(bls.G1)
+		err = commitment.SetBytes(commitmentsProto.GetPoint())
+		if err != nil {
+			return fmt.Errorf("error setting commitment for block %d: %v", blockIndex, err)
+		}
+
+		sc.muRbePp.Lock()
+		if sc.rbePp != nil {
+			// check if revision is newer than last update for this block
+			sc.muLastRevisionForBlock.RLock()
+			lastRev, exists := sc.lastRevisionForBlock[blockIndex]
+			if exists && revision <= lastRev {
+				log.Infof("[dev] skipping outdated commitment update for block %d: revision %d <= lastRev %d", blockIndex, revision, lastRev)
+			} else {
+				sc.rbePp.Commitments[blockIndex] = commitment
+				log.Infof("[dev] updated commitment for block %d at revision %d", blockIndex, revision)
+				sc.lastRevisionForBlock[blockIndex] = revision
+			}
+			sc.muLastRevisionForBlock.RUnlock()
+		} else {
+			return fmt.Errorf("[dev] rbePp is nil, cannot update single block commitment")
+		}
+		sc.muRbePp.Unlock()
+
+		sc.muRecentCommitments.Lock()
+		if sc.recentCommitments != nil {
+			// get the last revision's commitments
+			// update the last revision's commitments for this block
+			allRevisions := []int64{}
+			for rev := range sc.recentCommitments {
+				allRevisions = append(allRevisions, rev)
+			}
+			slices.Sort(allRevisions)
+			lastRevision := allRevisions[len(allRevisions)-1]
+
+			lastCommitment := sc.recentCommitments[lastRevision]
+			lastCommitment[blockIndex] = commitment
+			sc.recentCommitments[revision] = lastCommitment
+		} else {
+			log.Infof("[dev] recentCommitments is nil, cannot update single block commitment")
+		}
+		sc.muRecentCommitments.Unlock()
+
+		go sc.ListWatchOpeningsUpdate(revision)
+
+		return nil
+	} else {
+		log.Infof("[dev] this is a commitment update for all blocks: %s", key)
+	}
+
 	commitmentsProto := &kproto.Commitments{}
 	err := gproto.Unmarshal([]byte(value), commitmentsProto)
 	if err != nil {

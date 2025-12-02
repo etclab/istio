@@ -605,6 +605,7 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 		opening = append(opening, &proto.G1{Point: v.Bytes()})
 	}
 
+	// TODO: only send commitments for the blocks that changed
 	commitments := []*proto.G1{}
 	for _, v := range kcs.kc.PP.Commitments {
 		commitments = append(commitments, &proto.G1{Point: v.Bytes()})
@@ -622,7 +623,7 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 	// send updates on every registration
 	if kcs.isLeader.Load() {
 		log.Infof("[dev] I'm the leader, updating system params in etcd")
-		kcs.UpdateSystemParamsInEtcd()
+		kcs.UpdateSystemParamsInEtcd(id)
 	} else {
 		log.Infof("[dev] skip updating system params in etcd, not the leader")
 	}
@@ -630,16 +631,28 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 	return &pb.UserOpeningResponse{Opening: opening, Commitments: commitments}, nil
 }
 
-func (kcs *KeyCuratorServer) UpdateSystemParamsInEtcd() {
+func (kcs *KeyCuratorServer) UpdateSystemParamsInEtcd(id int) {
 	// serialize pp and store it in etcd
-	rev, err := etcdutil.SavePublicParamsToEtcd(kcs.EtcdClient, kcs.pp, true)
+	// rev, err := etcdutil.SavePublicParamsToEtcd(kcs.EtcdClient, kcs.pp, true)
+	// if err != nil {
+	// 	log.Errorf("[dev] failed to store public params in etcd: %v", err)
+	// 	return
+	// }
+
+	// only need to send commitments for the specific block to which id belongs
+	k := kcs.pp.IdToBlock(id)
+	commitmentForBlock := kcs.pp.Commitments[k]
+
+	rev, err := etcdutil.SaveCommitmentBlockToEtcd(kcs.EtcdClient, k, commitmentForBlock)
 	if err != nil {
-		log.Errorf("[dev] failed to store public params in etcd: %v", err)
+		log.Errorf("[dev] failed to store commitment for block %d in etcd: %v", k, err)
 		return
 	}
 
 	// serialize user openings and store it in etcd under the new commitments' revision
 	openings := kcs.kc.UserOpenings
+	// pp := kcs.kc.PP
+	// err = etcdutil.SaveUserOpeningsToEtcd(kcs.EtcdClient, id, pp, kcs.registeredIds, openings, rev)
 	err = etcdutil.SaveUserOpeningsToEtcd(kcs.EtcdClient, kcs.registeredIds, openings, rev)
 	if err != nil {
 		log.Errorf("[dev] failed to store user openings in etcd: %v", err)
