@@ -22,6 +22,53 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type ReadyRequest struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	Id int64 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+}
+
+func (x *ReadyRequest) Reset() {
+	*x = ReadyRequest{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_key_curator_proto_msgTypes[0]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *ReadyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReadyRequest) ProtoMessage() {}
+
+func (x *ReadyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_key_curator_proto_msgTypes[0]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReadyRequest.ProtoReflect.Descriptor instead.
+func (*ReadyRequest) Descriptor() ([]byte, []int) {
+	return file_key_curator_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *ReadyRequest) GetId() int64 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
 type Empty struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -31,7 +78,7 @@ type Empty struct {
 func (x *Empty) Reset() {
 	*x = Empty{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_key_curator_proto_msgTypes[0]
+		mi := &file_key_curator_proto_msgTypes[1]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -44,7 +91,7 @@ func (x *Empty) String() string {
 func (*Empty) ProtoMessage() {}
 
 func (x *Empty) ProtoReflect() protoreflect.Message {
-	mi := &file_key_curator_proto_msgTypes[0]
+	mi := &file_key_curator_proto_msgTypes[1]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -57,7 +104,7 @@ func (x *Empty) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Empty.ProtoReflect.Descriptor instead.
 func (*Empty) Descriptor() ([]byte, []int) {
-	return file_key_curator_proto_rawDescGZIP(), []int{0}
+	return file_key_curator_proto_rawDescGZIP(), []int{1}
 }
 
 type PublicParamsResponse struct {
@@ -71,7 +118,7 @@ type PublicParamsResponse struct {
 func (x *PublicParamsResponse) Reset() {
 	*x = PublicParamsResponse{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_key_curator_proto_msgTypes[1]
+		mi := &file_key_curator_proto_msgTypes[2]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -84,7 +131,7 @@ func (x *PublicParamsResponse) String() string {
 func (*PublicParamsResponse) ProtoMessage() {}
 
 func (x *PublicParamsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_key_curator_proto_msgTypes[1]
+	mi := &file_key_curator_proto_msgTypes[2]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -97,7 +144,7 @@ func (x *PublicParamsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PublicParamsResponse.ProtoReflect.Descriptor instead.
 func (*PublicParamsResponse) Descriptor() ([]byte, []int) {
-	return file_key_curator_proto_rawDescGZIP(), []int{1}
+	return file_key_curator_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *PublicParamsResponse) GetPp() *proto.PublicParams {
@@ -123,7 +170,7 @@ type RegisterRequest struct {
 func (x *RegisterRequest) Reset() {
 	*x = RegisterRequest{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_key_curator_proto_msgTypes[2]
+		mi := &file_key_curator_proto_msgTypes[3]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -136,7 +183,7 @@ func (x *RegisterRequest) String() string {
 func (*RegisterRequest) ProtoMessage() {}
 
 func (x *RegisterRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_key_curator_proto_msgTypes[2]
+	mi := &file_key_curator_proto_msgTypes[3]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -149,7 +196,7 @@ func (x *RegisterRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterRequest.ProtoReflect.Descriptor instead.
 func (*RegisterRequest) Descriptor() ([]byte, []int) {
-	return file_key_curator_proto_rawDescGZIP(), []int{2}
+	return file_key_curator_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *RegisterRequest) GetId() int64 {
@@ -206,7 +253,7 @@ type UserOpeningResponse struct {
 func (x *UserOpeningResponse) Reset() {
 	*x = UserOpeningResponse{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_key_curator_proto_msgTypes[3]
+		mi := &file_key_curator_proto_msgTypes[4]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -219,7 +266,7 @@ func (x *UserOpeningResponse) String() string {
 func (*UserOpeningResponse) ProtoMessage() {}
 
 func (x *UserOpeningResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_key_curator_proto_msgTypes[3]
+	mi := &file_key_curator_proto_msgTypes[4]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -232,7 +279,7 @@ func (x *UserOpeningResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserOpeningResponse.ProtoReflect.Descriptor instead.
 func (*UserOpeningResponse) Descriptor() ([]byte, []int) {
-	return file_key_curator_proto_rawDescGZIP(), []int{3}
+	return file_key_curator_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *UserOpeningResponse) GetCommitments() []*proto.G1 {
@@ -260,7 +307,7 @@ type UpdateRequest struct {
 func (x *UpdateRequest) Reset() {
 	*x = UpdateRequest{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_key_curator_proto_msgTypes[4]
+		mi := &file_key_curator_proto_msgTypes[5]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -273,7 +320,7 @@ func (x *UpdateRequest) String() string {
 func (*UpdateRequest) ProtoMessage() {}
 
 func (x *UpdateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_key_curator_proto_msgTypes[4]
+	mi := &file_key_curator_proto_msgTypes[5]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -286,7 +333,7 @@ func (x *UpdateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateRequest.ProtoReflect.Descriptor instead.
 func (*UpdateRequest) Descriptor() ([]byte, []int) {
-	return file_key_curator_proto_rawDescGZIP(), []int{4}
+	return file_key_curator_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *UpdateRequest) GetId() int64 {
@@ -307,7 +354,7 @@ type Opening struct {
 func (x *Opening) Reset() {
 	*x = Opening{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_key_curator_proto_msgTypes[5]
+		mi := &file_key_curator_proto_msgTypes[6]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -320,7 +367,7 @@ func (x *Opening) String() string {
 func (*Opening) ProtoMessage() {}
 
 func (x *Opening) ProtoReflect() protoreflect.Message {
-	mi := &file_key_curator_proto_msgTypes[5]
+	mi := &file_key_curator_proto_msgTypes[6]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -333,7 +380,7 @@ func (x *Opening) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Opening.ProtoReflect.Descriptor instead.
 func (*Opening) Descriptor() ([]byte, []int) {
-	return file_key_curator_proto_rawDescGZIP(), []int{5}
+	return file_key_curator_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *Opening) GetOpening() []*proto.G1 {
@@ -354,7 +401,7 @@ type H1 struct {
 func (x *H1) Reset() {
 	*x = H1{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_key_curator_proto_msgTypes[6]
+		mi := &file_key_curator_proto_msgTypes[7]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -367,7 +414,7 @@ func (x *H1) String() string {
 func (*H1) ProtoMessage() {}
 
 func (x *H1) ProtoReflect() protoreflect.Message {
-	mi := &file_key_curator_proto_msgTypes[6]
+	mi := &file_key_curator_proto_msgTypes[7]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -380,7 +427,7 @@ func (x *H1) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use H1.ProtoReflect.Descriptor instead.
 func (*H1) Descriptor() ([]byte, []int) {
-	return file_key_curator_proto_rawDescGZIP(), []int{6}
+	return file_key_curator_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *H1) GetH1() []*proto.G1 {
@@ -401,7 +448,7 @@ type H2 struct {
 func (x *H2) Reset() {
 	*x = H2{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_key_curator_proto_msgTypes[7]
+		mi := &file_key_curator_proto_msgTypes[8]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -414,7 +461,7 @@ func (x *H2) String() string {
 func (*H2) ProtoMessage() {}
 
 func (x *H2) ProtoReflect() protoreflect.Message {
-	mi := &file_key_curator_proto_msgTypes[7]
+	mi := &file_key_curator_proto_msgTypes[8]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -427,7 +474,7 @@ func (x *H2) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use H2.ProtoReflect.Descriptor instead.
 func (*H2) Descriptor() ([]byte, []int) {
-	return file_key_curator_proto_rawDescGZIP(), []int{7}
+	return file_key_curator_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *H2) GetH2() []*proto.G2 {
@@ -448,7 +495,7 @@ type Commitments struct {
 func (x *Commitments) Reset() {
 	*x = Commitments{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_key_curator_proto_msgTypes[8]
+		mi := &file_key_curator_proto_msgTypes[9]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -461,7 +508,7 @@ func (x *Commitments) String() string {
 func (*Commitments) ProtoMessage() {}
 
 func (x *Commitments) ProtoReflect() protoreflect.Message {
-	mi := &file_key_curator_proto_msgTypes[8]
+	mi := &file_key_curator_proto_msgTypes[9]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -474,7 +521,7 @@ func (x *Commitments) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Commitments.ProtoReflect.Descriptor instead.
 func (*Commitments) Descriptor() ([]byte, []int) {
-	return file_key_curator_proto_rawDescGZIP(), []int{8}
+	return file_key_curator_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *Commitments) GetCommitments() []*proto.G1 {
@@ -495,7 +542,7 @@ type AllUserOpenings struct {
 func (x *AllUserOpenings) Reset() {
 	*x = AllUserOpenings{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_key_curator_proto_msgTypes[9]
+		mi := &file_key_curator_proto_msgTypes[10]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -508,7 +555,7 @@ func (x *AllUserOpenings) String() string {
 func (*AllUserOpenings) ProtoMessage() {}
 
 func (x *AllUserOpenings) ProtoReflect() protoreflect.Message {
-	mi := &file_key_curator_proto_msgTypes[9]
+	mi := &file_key_curator_proto_msgTypes[10]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -521,7 +568,7 @@ func (x *AllUserOpenings) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AllUserOpenings.ProtoReflect.Descriptor instead.
 func (*AllUserOpenings) Descriptor() ([]byte, []int) {
-	return file_key_curator_proto_rawDescGZIP(), []int{9}
+	return file_key_curator_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *AllUserOpenings) GetAllOpenings() []*Opening {
@@ -544,7 +591,7 @@ type AllUpdatesResponse struct {
 func (x *AllUpdatesResponse) Reset() {
 	*x = AllUpdatesResponse{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_key_curator_proto_msgTypes[10]
+		mi := &file_key_curator_proto_msgTypes[11]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -557,7 +604,7 @@ func (x *AllUpdatesResponse) String() string {
 func (*AllUpdatesResponse) ProtoMessage() {}
 
 func (x *AllUpdatesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_key_curator_proto_msgTypes[10]
+	mi := &file_key_curator_proto_msgTypes[11]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -570,7 +617,7 @@ func (x *AllUpdatesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AllUpdatesResponse.ProtoReflect.Descriptor instead.
 func (*AllUpdatesResponse) Descriptor() ([]byte, []int) {
-	return file_key_curator_proto_rawDescGZIP(), []int{10}
+	return file_key_curator_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *AllUpdatesResponse) GetAllCommitments() []*proto.G1 {
@@ -610,7 +657,7 @@ type RegistrationEvent struct {
 func (x *RegistrationEvent) Reset() {
 	*x = RegistrationEvent{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_key_curator_proto_msgTypes[11]
+		mi := &file_key_curator_proto_msgTypes[12]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -623,7 +670,7 @@ func (x *RegistrationEvent) String() string {
 func (*RegistrationEvent) ProtoMessage() {}
 
 func (x *RegistrationEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_key_curator_proto_msgTypes[11]
+	mi := &file_key_curator_proto_msgTypes[12]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -636,7 +683,7 @@ func (x *RegistrationEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegistrationEvent.ProtoReflect.Descriptor instead.
 func (*RegistrationEvent) Descriptor() ([]byte, []int) {
-	return file_key_curator_proto_rawDescGZIP(), []int{11}
+	return file_key_curator_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *RegistrationEvent) GetToken() string {
@@ -688,7 +735,9 @@ var file_key_curator_proto_rawDesc = []byte{
 	0x6f, 0x74, 0x6f, 0x12, 0x0a, 0x6b, 0x65, 0x79, 0x63, 0x75, 0x72, 0x61, 0x74, 0x6f, 0x72, 0x1a,
 	0x09, 0x72, 0x62, 0x65, 0x2e, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x1a, 0x1b, 0x67, 0x6f, 0x6f, 0x67,
 	0x6c, 0x65, 0x2f, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x62, 0x75, 0x66, 0x2f, 0x65, 0x6d, 0x70, 0x74,
-	0x79, 0x2e, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x22, 0x07, 0x0a, 0x05, 0x45, 0x6d, 0x70, 0x74, 0x79,
+	0x79, 0x2e, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x22, 0x1e, 0x0a, 0x0c, 0x52, 0x65, 0x61, 0x64, 0x79,
+	0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x12, 0x0e, 0x0a, 0x02, 0x69, 0x64, 0x18, 0x01, 0x20,
+	0x01, 0x28, 0x03, 0x52, 0x02, 0x69, 0x64, 0x22, 0x07, 0x0a, 0x05, 0x45, 0x6d, 0x70, 0x74, 0x79,
 	0x22, 0x3f, 0x0a, 0x14, 0x50, 0x75, 0x62, 0x6c, 0x69, 0x63, 0x50, 0x61, 0x72, 0x61, 0x6d, 0x73,
 	0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x12, 0x27, 0x0a, 0x02, 0x70, 0x70, 0x18, 0x01,
 	0x20, 0x01, 0x28, 0x0b, 0x32, 0x17, 0x2e, 0x72, 0x62, 0x65, 0x2e, 0x70, 0x72, 0x6f, 0x74, 0x6f,
@@ -752,7 +801,7 @@ var file_key_curator_proto_rawDesc = []byte{
 	0x74, 0x6f, 0x2e, 0x47, 0x31, 0x52, 0x09, 0x70, 0x75, 0x62, 0x6c, 0x69, 0x63, 0x4b, 0x65, 0x79,
 	0x12, 0x1d, 0x0a, 0x02, 0x78, 0x69, 0x18, 0x06, 0x20, 0x03, 0x28, 0x0b, 0x32, 0x0d, 0x2e, 0x72,
 	0x62, 0x65, 0x2e, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x2e, 0x47, 0x31, 0x52, 0x02, 0x78, 0x69, 0x32,
-	0xc7, 0x02, 0x0a, 0x0a, 0x4b, 0x65, 0x79, 0x43, 0x75, 0x72, 0x61, 0x74, 0x6f, 0x72, 0x12, 0x4b,
+	0x88, 0x03, 0x0a, 0x0a, 0x4b, 0x65, 0x79, 0x43, 0x75, 0x72, 0x61, 0x74, 0x6f, 0x72, 0x12, 0x4b,
 	0x0a, 0x0b, 0x46, 0x65, 0x74, 0x63, 0x68, 0x55, 0x70, 0x64, 0x61, 0x74, 0x65, 0x12, 0x19, 0x2e,
 	0x6b, 0x65, 0x79, 0x63, 0x75, 0x72, 0x61, 0x74, 0x6f, 0x72, 0x2e, 0x55, 0x70, 0x64, 0x61, 0x74,
 	0x65, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x1f, 0x2e, 0x6b, 0x65, 0x79, 0x63, 0x75,
@@ -772,11 +821,15 @@ var file_key_curator_proto_rawDesc = []byte{
 	0x75, 0x72, 0x61, 0x74, 0x6f, 0x72, 0x2e, 0x52, 0x65, 0x67, 0x69, 0x73, 0x74, 0x65, 0x72, 0x52,
 	0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x1f, 0x2e, 0x6b, 0x65, 0x79, 0x63, 0x75, 0x72, 0x61,
 	0x74, 0x6f, 0x72, 0x2e, 0x55, 0x73, 0x65, 0x72, 0x4f, 0x70, 0x65, 0x6e, 0x69, 0x6e, 0x67, 0x52,
-	0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x22, 0x00, 0x42, 0x35, 0x5a, 0x33, 0x69, 0x73, 0x74,
-	0x69, 0x6f, 0x2e, 0x69, 0x6f, 0x2f, 0x69, 0x73, 0x74, 0x69, 0x6f, 0x2f, 0x73, 0x65, 0x63, 0x75,
-	0x72, 0x69, 0x74, 0x79, 0x2f, 0x70, 0x6b, 0x67, 0x2f, 0x6b, 0x65, 0x79, 0x2d, 0x63, 0x75, 0x72,
-	0x61, 0x74, 0x6f, 0x72, 0x2f, 0x6b, 0x65, 0x79, 0x2d, 0x63, 0x75, 0x72, 0x61, 0x74, 0x6f, 0x72,
-	0x62, 0x06, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x33,
+	0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x22, 0x00, 0x12, 0x3f, 0x0a, 0x09, 0x4d, 0x61, 0x72,
+	0x6b, 0x52, 0x65, 0x61, 0x64, 0x79, 0x12, 0x18, 0x2e, 0x6b, 0x65, 0x79, 0x63, 0x75, 0x72, 0x61,
+	0x74, 0x6f, 0x72, 0x2e, 0x52, 0x65, 0x61, 0x64, 0x79, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74,
+	0x1a, 0x16, 0x2e, 0x67, 0x6f, 0x6f, 0x67, 0x6c, 0x65, 0x2e, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x62,
+	0x75, 0x66, 0x2e, 0x45, 0x6d, 0x70, 0x74, 0x79, 0x22, 0x00, 0x42, 0x35, 0x5a, 0x33, 0x69, 0x73,
+	0x74, 0x69, 0x6f, 0x2e, 0x69, 0x6f, 0x2f, 0x69, 0x73, 0x74, 0x69, 0x6f, 0x2f, 0x73, 0x65, 0x63,
+	0x75, 0x72, 0x69, 0x74, 0x79, 0x2f, 0x70, 0x6b, 0x67, 0x2f, 0x6b, 0x65, 0x79, 0x2d, 0x63, 0x75,
+	0x72, 0x61, 0x74, 0x6f, 0x72, 0x2f, 0x6b, 0x65, 0x79, 0x2d, 0x63, 0x75, 0x72, 0x61, 0x74, 0x6f,
+	0x72, 0x62, 0x06, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x33,
 }
 
 var (
@@ -791,51 +844,54 @@ func file_key_curator_proto_rawDescGZIP() []byte {
 	return file_key_curator_proto_rawDescData
 }
 
-var file_key_curator_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_key_curator_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_key_curator_proto_goTypes = []interface{}{
-	(*Empty)(nil),                // 0: keycurator.Empty
-	(*PublicParamsResponse)(nil), // 1: keycurator.PublicParamsResponse
-	(*RegisterRequest)(nil),      // 2: keycurator.RegisterRequest
-	(*UserOpeningResponse)(nil),  // 3: keycurator.UserOpeningResponse
-	(*UpdateRequest)(nil),        // 4: keycurator.UpdateRequest
-	(*Opening)(nil),              // 5: keycurator.Opening
-	(*H1)(nil),                   // 6: keycurator.H1
-	(*H2)(nil),                   // 7: keycurator.H2
-	(*Commitments)(nil),          // 8: keycurator.Commitments
-	(*AllUserOpenings)(nil),      // 9: keycurator.AllUserOpenings
-	(*AllUpdatesResponse)(nil),   // 10: keycurator.AllUpdatesResponse
-	(*RegistrationEvent)(nil),    // 11: keycurator.RegistrationEvent
-	(*proto.PublicParams)(nil),   // 12: rbe.proto.PublicParams
-	(*proto.G1)(nil),             // 13: rbe.proto.G1
-	(*proto.G2)(nil),             // 14: rbe.proto.G2
-	(*emptypb.Empty)(nil),        // 15: google.protobuf.Empty
+	(*ReadyRequest)(nil),         // 0: keycurator.ReadyRequest
+	(*Empty)(nil),                // 1: keycurator.Empty
+	(*PublicParamsResponse)(nil), // 2: keycurator.PublicParamsResponse
+	(*RegisterRequest)(nil),      // 3: keycurator.RegisterRequest
+	(*UserOpeningResponse)(nil),  // 4: keycurator.UserOpeningResponse
+	(*UpdateRequest)(nil),        // 5: keycurator.UpdateRequest
+	(*Opening)(nil),              // 6: keycurator.Opening
+	(*H1)(nil),                   // 7: keycurator.H1
+	(*H2)(nil),                   // 8: keycurator.H2
+	(*Commitments)(nil),          // 9: keycurator.Commitments
+	(*AllUserOpenings)(nil),      // 10: keycurator.AllUserOpenings
+	(*AllUpdatesResponse)(nil),   // 11: keycurator.AllUpdatesResponse
+	(*RegistrationEvent)(nil),    // 12: keycurator.RegistrationEvent
+	(*proto.PublicParams)(nil),   // 13: rbe.proto.PublicParams
+	(*proto.G1)(nil),             // 14: rbe.proto.G1
+	(*proto.G2)(nil),             // 15: rbe.proto.G2
+	(*emptypb.Empty)(nil),        // 16: google.protobuf.Empty
 }
 var file_key_curator_proto_depIdxs = []int32{
-	12, // 0: keycurator.PublicParamsResponse.pp:type_name -> rbe.proto.PublicParams
-	13, // 1: keycurator.RegisterRequest.publicKey:type_name -> rbe.proto.G1
-	13, // 2: keycurator.RegisterRequest.xi:type_name -> rbe.proto.G1
-	13, // 3: keycurator.UserOpeningResponse.commitments:type_name -> rbe.proto.G1
-	13, // 4: keycurator.UserOpeningResponse.opening:type_name -> rbe.proto.G1
-	13, // 5: keycurator.Opening.opening:type_name -> rbe.proto.G1
-	13, // 6: keycurator.H1.h1:type_name -> rbe.proto.G1
-	14, // 7: keycurator.H2.H2:type_name -> rbe.proto.G2
-	13, // 8: keycurator.Commitments.commitments:type_name -> rbe.proto.G1
-	5,  // 9: keycurator.AllUserOpenings.allOpenings:type_name -> keycurator.Opening
-	13, // 10: keycurator.AllUpdatesResponse.allCommitments:type_name -> rbe.proto.G1
-	5,  // 11: keycurator.AllUpdatesResponse.allOpenings:type_name -> keycurator.Opening
-	11, // 12: keycurator.AllUpdatesResponse.history:type_name -> keycurator.RegistrationEvent
-	13, // 13: keycurator.RegistrationEvent.publicKey:type_name -> rbe.proto.G1
-	13, // 14: keycurator.RegistrationEvent.xi:type_name -> rbe.proto.G1
-	4,  // 15: keycurator.KeyCurator.FetchUpdate:input_type -> keycurator.UpdateRequest
-	15, // 16: keycurator.KeyCurator.FetchAllUpdates:input_type -> google.protobuf.Empty
-	15, // 17: keycurator.KeyCurator.FetchPublicParams:input_type -> google.protobuf.Empty
-	2,  // 18: keycurator.KeyCurator.RegisterUser:input_type -> keycurator.RegisterRequest
-	3,  // 19: keycurator.KeyCurator.FetchUpdate:output_type -> keycurator.UserOpeningResponse
-	10, // 20: keycurator.KeyCurator.FetchAllUpdates:output_type -> keycurator.AllUpdatesResponse
-	1,  // 21: keycurator.KeyCurator.FetchPublicParams:output_type -> keycurator.PublicParamsResponse
-	3,  // 22: keycurator.KeyCurator.RegisterUser:output_type -> keycurator.UserOpeningResponse
-	19, // [19:23] is the sub-list for method output_type
-	15, // [15:19] is the sub-list for method input_type
+	13, // 0: keycurator.PublicParamsResponse.pp:type_name -> rbe.proto.PublicParams
+	14, // 1: keycurator.RegisterRequest.publicKey:type_name -> rbe.proto.G1
+	14, // 2: keycurator.RegisterRequest.xi:type_name -> rbe.proto.G1
+	14, // 3: keycurator.UserOpeningResponse.commitments:type_name -> rbe.proto.G1
+	14, // 4: keycurator.UserOpeningResponse.opening:type_name -> rbe.proto.G1
+	14, // 5: keycurator.Opening.opening:type_name -> rbe.proto.G1
+	14, // 6: keycurator.H1.h1:type_name -> rbe.proto.G1
+	15, // 7: keycurator.H2.H2:type_name -> rbe.proto.G2
+	14, // 8: keycurator.Commitments.commitments:type_name -> rbe.proto.G1
+	6,  // 9: keycurator.AllUserOpenings.allOpenings:type_name -> keycurator.Opening
+	14, // 10: keycurator.AllUpdatesResponse.allCommitments:type_name -> rbe.proto.G1
+	6,  // 11: keycurator.AllUpdatesResponse.allOpenings:type_name -> keycurator.Opening
+	12, // 12: keycurator.AllUpdatesResponse.history:type_name -> keycurator.RegistrationEvent
+	14, // 13: keycurator.RegistrationEvent.publicKey:type_name -> rbe.proto.G1
+	14, // 14: keycurator.RegistrationEvent.xi:type_name -> rbe.proto.G1
+	5,  // 15: keycurator.KeyCurator.FetchUpdate:input_type -> keycurator.UpdateRequest
+	16, // 16: keycurator.KeyCurator.FetchAllUpdates:input_type -> google.protobuf.Empty
+	16, // 17: keycurator.KeyCurator.FetchPublicParams:input_type -> google.protobuf.Empty
+	3,  // 18: keycurator.KeyCurator.RegisterUser:input_type -> keycurator.RegisterRequest
+	0,  // 19: keycurator.KeyCurator.MarkReady:input_type -> keycurator.ReadyRequest
+	4,  // 20: keycurator.KeyCurator.FetchUpdate:output_type -> keycurator.UserOpeningResponse
+	11, // 21: keycurator.KeyCurator.FetchAllUpdates:output_type -> keycurator.AllUpdatesResponse
+	2,  // 22: keycurator.KeyCurator.FetchPublicParams:output_type -> keycurator.PublicParamsResponse
+	4,  // 23: keycurator.KeyCurator.RegisterUser:output_type -> keycurator.UserOpeningResponse
+	16, // 24: keycurator.KeyCurator.MarkReady:output_type -> google.protobuf.Empty
+	20, // [20:25] is the sub-list for method output_type
+	15, // [15:20] is the sub-list for method input_type
 	15, // [15:15] is the sub-list for extension type_name
 	15, // [15:15] is the sub-list for extension extendee
 	0,  // [0:15] is the sub-list for field type_name
@@ -848,7 +904,7 @@ func file_key_curator_proto_init() {
 	}
 	if !protoimpl.UnsafeEnabled {
 		file_key_curator_proto_msgTypes[0].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*Empty); i {
+			switch v := v.(*ReadyRequest); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -860,7 +916,7 @@ func file_key_curator_proto_init() {
 			}
 		}
 		file_key_curator_proto_msgTypes[1].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*PublicParamsResponse); i {
+			switch v := v.(*Empty); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -872,7 +928,7 @@ func file_key_curator_proto_init() {
 			}
 		}
 		file_key_curator_proto_msgTypes[2].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*RegisterRequest); i {
+			switch v := v.(*PublicParamsResponse); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -884,7 +940,7 @@ func file_key_curator_proto_init() {
 			}
 		}
 		file_key_curator_proto_msgTypes[3].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*UserOpeningResponse); i {
+			switch v := v.(*RegisterRequest); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -896,7 +952,7 @@ func file_key_curator_proto_init() {
 			}
 		}
 		file_key_curator_proto_msgTypes[4].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*UpdateRequest); i {
+			switch v := v.(*UserOpeningResponse); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -908,7 +964,7 @@ func file_key_curator_proto_init() {
 			}
 		}
 		file_key_curator_proto_msgTypes[5].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*Opening); i {
+			switch v := v.(*UpdateRequest); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -920,7 +976,7 @@ func file_key_curator_proto_init() {
 			}
 		}
 		file_key_curator_proto_msgTypes[6].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*H1); i {
+			switch v := v.(*Opening); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -932,7 +988,7 @@ func file_key_curator_proto_init() {
 			}
 		}
 		file_key_curator_proto_msgTypes[7].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*H2); i {
+			switch v := v.(*H1); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -944,7 +1000,7 @@ func file_key_curator_proto_init() {
 			}
 		}
 		file_key_curator_proto_msgTypes[8].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*Commitments); i {
+			switch v := v.(*H2); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -956,7 +1012,7 @@ func file_key_curator_proto_init() {
 			}
 		}
 		file_key_curator_proto_msgTypes[9].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*AllUserOpenings); i {
+			switch v := v.(*Commitments); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -968,7 +1024,7 @@ func file_key_curator_proto_init() {
 			}
 		}
 		file_key_curator_proto_msgTypes[10].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*AllUpdatesResponse); i {
+			switch v := v.(*AllUserOpenings); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -980,6 +1036,18 @@ func file_key_curator_proto_init() {
 			}
 		}
 		file_key_curator_proto_msgTypes[11].Exporter = func(v interface{}, i int) interface{} {
+			switch v := v.(*AllUpdatesResponse); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
+		file_key_curator_proto_msgTypes[12].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*RegistrationEvent); i {
 			case 0:
 				return &v.state
@@ -998,7 +1066,7 @@ func file_key_curator_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: file_key_curator_proto_rawDesc,
 			NumEnums:      0,
-			NumMessages:   12,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

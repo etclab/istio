@@ -12,6 +12,11 @@ service KeyCurator {
     rpc FetchAllUpdates(google.protobuf.Empty) returns (AllUpdatesResponse) {}
     rpc FetchPublicParams(google.protobuf.Empty) returns (PublicParamsResponse) {}
     rpc RegisterUser(RegisterRequest) returns (UserOpeningResponse) {}
+    rpc MarkReady(ReadyRequest) returns (google.protobuf.Empty) {}
+}
+
+message ReadyRequest {
+    int64 id = 1;
 }
 
 message Empty {}

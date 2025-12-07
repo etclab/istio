@@ -217,21 +217,19 @@ func PutKVToEtcd(etcdClient *clientv3.Client, key string, value []byte) (int64, 
 	return rev, nil
 }
 
-func SaveUserOpeningsToEtcd(etcdClient *clientv3.Client, registeredIds map[int]bool,
-	openings [][]*bls.G1, commitmentsRev int64) error {
-	// func SaveUserOpeningsToEtcd(etcdClient *clientv3.Client, userId int, pp *rbe.PublicParams,
-	// 	registeredIds map[int]bool, openings [][]*bls.G1, commitmentsRev int64) error {
+func SaveUserOpeningsToEtcd(etcdClient *clientv3.Client, userId int, pp *rbe.PublicParams,
+	registeredIds map[int]bool, openings [][]*bls.G1, commitmentsRev int64) error {
 
-	// 	newUserBlock := pp.IdToBlock(userId)
+	newUserBlock := pp.IdToBlock(userId)
 
 	for key, value := range registeredIds {
-		// userBlock := pp.IdToBlock(key)
+		userBlock := pp.IdToBlock(key)
 
-		// if userBlock != newUserBlock {
-		// 	// only update openings for users in the same block
-		// 	log.Infof("[dev] user %d is in a different block than new user %d", userBlock, newUserBlock)
-		// 	continue
-		// }
+		if userBlock != newUserBlock {
+			// only update openings for users in the same block
+			log.Infof("[dev] user %d is in a different block than new user %d", userBlock, newUserBlock)
+			continue
+		}
 
 		if !value {
 			log.Warnf("[dev] user id %d is not registered, skipping saving its opening", key)

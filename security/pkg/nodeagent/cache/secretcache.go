@@ -27,7 +27,6 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -118,7 +117,11 @@ type SecretManagerClient struct {
 	lastRevisionForBlock   map[int]int64
 	muLastRevisionForBlock sync.RWMutex
 
-	lastRevisionForUser   map[int]int64
+	// new map for user openings
+	userOpenings2   map[string][]*bls.G1
+	muUserOpenings2 sync.RWMutex
+
+	lastRevisionForUser   map[string]int64
 	muLastRevisionForUser sync.RWMutex
 
 	resetOpeningsChan chan bool
@@ -131,6 +134,10 @@ type SecretManagerClient struct {
 
 	userOpenings   map[string]map[string][]*bls.G1
 	muUserOpenings sync.RWMutex
+
+	// new map for pods validity
+	podsValidityMap2   map[string]bool
+	muPodsValidityMap2 sync.RWMutex
 
 	podsValidityMap   map[string]map[string]bool
 	muPodsValidityMap sync.RWMutex
@@ -536,21 +543,22 @@ func (sc *SecretManagerClient) UpdatePodValidationWithUser() {
 		// 		sc.receivedOpeningKeyChan <- fmt.Sprintf("%s/%s", kconstants.RBE_USER_PREFIX, openingKey)
 		// 	}
 		// }
-		existingKeys := []string{}
-		sc.muUserOpenings.RLock()
-		for commRev, _ := range sc.userOpenings {
-			if sc.userOpenings[commRev] != nil {
-				for id, _ := range sc.userOpenings[commRev] {
-					openingKey := fmt.Sprintf("%s/%s", commRev, id)
-					existingKeys = append(existingKeys, openingKey)
-				}
-			}
-		}
-		sc.muUserOpenings.RUnlock()
+		// existingKeys := []string{}
+		// sc.muUserOpenings.RLock()
+		// for commRev, _ := range sc.userOpenings {
+		// 	if sc.userOpenings[commRev] != nil {
+		// 		for id, _ := range sc.userOpenings[commRev] {
+		// 			openingKey := fmt.Sprintf("%s/%s", commRev, id)
+		// 			existingKeys = append(existingKeys, openingKey)
+		// 		}
+		// 	}
+		// }
+		// sc.muUserOpenings.RUnlock()
 
-		for _, openingKey := range existingKeys {
-			sc.receivedOpeningKeyChan <- fmt.Sprintf("%s/%s", kconstants.RBE_OPENINGS_KEY, openingKey)
-		}
+		// for _, openingKey := range existingKeys {
+		// 	sc.receivedOpeningKeyChan <- fmt.Sprintf("%s/%s", kconstants.RBE_OPENINGS_KEY, openingKey)
+		// }
+		go sc.retryAllOpeningsForUser(userId)
 
 		// sc.muRegUsers.RUnlock()
 		// sc.muRecentCommitments.RUnlock()
@@ -572,6 +580,28 @@ func (sc *SecretManagerClient) trackErroredWaiting(userId string, commRevision s
 	sc.erroredWaiting[commRevision][userId] = true
 
 	log.Infof("[dev] errored waiting map now: %+v", sc.erroredWaiting)
+
+	// defer func() {
+	// 	go sc.retryOneFromErroredWaiting()
+	// }()
+}
+
+func (sc *SecretManagerClient) retryAllOpeningsForUser(newUserId string) {
+	log.Infof("[dev] retrying all openings for userId: %s", newUserId)
+	sc.muErroredWaiting.Lock()
+	defer sc.muErroredWaiting.Unlock()
+	for commRevision, userMap := range sc.erroredWaiting {
+		for userId := range userMap {
+			if userId == newUserId && userMap[userId] {
+				// found one to retry
+				log.Infof("[dev] retrying for userId: %s, commRevision: %s", userId, commRevision)
+				// add to the queue
+				sc.receivedOpeningKeyChan <- fmt.Sprintf("%s/%s/%s", kconstants.RBE_OPENINGS_KEY, commRevision, userId)
+				// remove from the map - if this fails again it'll be added back
+				sc.erroredWaiting[commRevision][userId] = false
+			}
+		}
+	}
 }
 
 func (sc *SecretManagerClient) retryOneFromErroredWaiting() {
@@ -636,21 +666,23 @@ func (sc *SecretManagerClient) updatePodValidationWithOpeningUtil(userId string,
 
 	// get the required commitments from recentCommitments map
 	commitments := []*bls.G1{}
-	sc.muRecentCommitments.RLock()
-	if sc.recentCommitments != nil {
-		commitments = sc.recentCommitments[commRevInt]
-	}
-	sc.muRecentCommitments.RUnlock()
+	// sc.muRecentCommitments.RLock()
+	// if sc.recentCommitments != nil {
+	// 	commitments = sc.recentCommitments[commRevInt]
+	// }
+	// sc.muRecentCommitments.RUnlock()
 
 	pp := new(rbe.PublicParams)
 	sc.muRbePp.RLock()
 	if sc.rbePp != nil {
 		pp = sc.rbePp
+		commitments = sc.rbePp.Commitments
 	}
 	sc.muRbePp.RUnlock()
 
 	if len(commitments) == 0 {
-		log.Warnf("[dev] commitments not found for revision: %s", commRevision)
+		// log.Warnf("[dev] commitments not found for revision: %s", commRevision)
+		log.Warnf("[dev] commitments not found")
 		go sc.trackErroredWaiting(userId, commRevision)
 		return
 	}
@@ -660,13 +692,20 @@ func (sc *SecretManagerClient) updatePodValidationWithOpeningUtil(userId string,
 	myOpening := []*bls.G1{}
 	idOtherUser := int(otherUserRbeId.ToNumber())
 
-	sc.muUserOpenings.RLock()
-	if sc.userOpenings != nil && sc.userOpenings[commRevision] != nil {
+	// sc.muUserOpenings.RLock()
+	// if sc.userOpenings != nil && sc.userOpenings[commRevision] != nil {
+	// 	id := strconv.Itoa(rbeSecret.User.Id())
+	// 	myOpening = sc.userOpenings[commRevision][id]
+	// 	otherUserOpening = sc.userOpenings[commRevision][strconv.Itoa(idOtherUser)]
+	// }
+	// sc.muUserOpenings.RUnlock()
+	sc.muUserOpenings2.RLock()
+	if sc.userOpenings2 != nil {
 		id := strconv.Itoa(rbeSecret.User.Id())
-		myOpening = sc.userOpenings[commRevision][id]
-		otherUserOpening = sc.userOpenings[commRevision][strconv.Itoa(idOtherUser)]
+		myOpening = sc.userOpenings2[id]
+		otherUserOpening = sc.userOpenings2[strconv.Itoa(idOtherUser)]
 	}
-	sc.muUserOpenings.RUnlock()
+	sc.muUserOpenings2.RUnlock()
 
 	if len(otherUserOpening) == 0 {
 		log.Warnf("[dev] userOpening not found for other user id: %d, commitment revision: %s", idOtherUser, commRevision)
@@ -675,7 +714,8 @@ func (sc *SecretManagerClient) updatePodValidationWithOpeningUtil(userId string,
 	}
 
 	if len(myOpening) == 0 {
-		log.Warnf("[dev] myOpening not found for this user id: %d, commitment revision: %s", rbeSecret.User.Id(), commRevision)
+		log.Warnf("[dev] myOpening not found for this user id: %d, commRevision: %s",
+			rbeSecret.User.Id(), commRevision)
 		go sc.trackErroredWaiting(userId, commRevision)
 		return
 	}
@@ -710,50 +750,62 @@ func (sc *SecretManagerClient) updatePodValidationWithOpeningUtil(userId string,
 		}
 	}
 
-	sc.muPodsValidityMap.Lock()
-	defer sc.muPodsValidityMap.Unlock()
-	if sc.podsValidityMap == nil {
-		sc.podsValidityMap = make(map[string]map[string]bool)
+	sc.muPodsValidityMap2.Lock()
+	defer sc.muPodsValidityMap2.Unlock()
+	if sc.podsValidityMap2 == nil {
+		sc.podsValidityMap2 = make(map[string]bool)
 	}
-	if sc.podsValidityMap[commRevision] == nil {
-		sc.podsValidityMap[commRevision] = make(map[string]bool)
-	}
-	sc.podsValidityMap[commRevision][key] = result
+	sc.podsValidityMap2[key] = result
 
-	// only choose the last three revisions
-	// merge all three revisions' pod validity map -> then save to json file
-	revisions := []int64{}
-	for revStr := range sc.podsValidityMap {
-		revInt, err := strconv.ParseInt(revStr, 10, 64)
-		if err != nil {
-			log.Errorf("[dev] invalid revision string in pod validity map: %s", revStr)
-			continue
+	log.Infof("[dev] updated pod validity map2 with key: %s, result: %v", key, result)
+
+	/*
+		sc.muPodsValidityMap.Lock()
+		defer sc.muPodsValidityMap.Unlock()
+		if sc.podsValidityMap == nil {
+			sc.podsValidityMap = make(map[string]map[string]bool)
 		}
-		revisions = append(revisions, revInt)
-	}
-	// sort revisions
-	slices.Sort(revisions)
-	// get last three revisions
-	lastThree := []int64{}
-	if len(revisions) <= 3 {
-		lastThree = revisions
-	} else {
-		lastThree = revisions[len(revisions)-3:]
-	}
-	mergedPodValidityMap := map[string]bool{}
-	for _, rev := range lastThree {
-		revStr := strconv.FormatInt(rev, 10)
-		for key, value := range sc.podsValidityMap[revStr] {
-			oldValue, exists := mergedPodValidityMap[key]
-			if exists {
-				mergedPodValidityMap[key] = value || oldValue
-			} else {
-				mergedPodValidityMap[key] = value
+		if sc.podsValidityMap[commRevision] == nil {
+			sc.podsValidityMap[commRevision] = make(map[string]bool)
+		}
+		sc.podsValidityMap[commRevision][key] = result
+
+		// only choose the last three revisions
+		// merge all three revisions' pod validity map -> then save to json file
+		revisions := []int64{}
+		for revStr := range sc.podsValidityMap {
+			revInt, err := strconv.ParseInt(revStr, 10, 64)
+			if err != nil {
+				log.Errorf("[dev] invalid revision string in pod validity map: %s", revStr)
+				continue
+			}
+			revisions = append(revisions, revInt)
+		}
+		// sort revisions
+		slices.Sort(revisions)
+		// get last three revisions
+		lastThree := []int64{}
+		if len(revisions) <= 3 {
+			lastThree = revisions
+		} else {
+			lastThree = revisions[len(revisions)-3:]
+		}
+		mergedPodValidityMap := map[string]bool{}
+		for _, rev := range lastThree {
+			revStr := strconv.FormatInt(rev, 10)
+			for key, value := range sc.podsValidityMap[revStr] {
+				oldValue, exists := mergedPodValidityMap[key]
+				if exists {
+					mergedPodValidityMap[key] = value || oldValue
+				} else {
+					mergedPodValidityMap[key] = value
+				}
 			}
 		}
-	}
+	*/
 
-	jsonString, err := json.Marshal(mergedPodValidityMap)
+	// jsonString, err := json.Marshal(mergedPodValidityMap)
+	jsonString, err := json.Marshal(sc.podsValidityMap2)
 	if err != nil {
 		log.Errorf("[dev] err on marshalling pod validity map to json: %v", err)
 		return
@@ -993,6 +1045,8 @@ func (sc *SecretManagerClient) handleRegisteredUserUpdate(keyStr string, value [
 		sc.muRegUsers.Unlock()
 
 		log.Infof("[dev] saved registered user for key: %s", keyStr)
+
+		go sc.retryAllOpeningsForUser(strconv.FormatInt(req.Id, 10))
 	} else {
 		return fmt.Errorf("[dev] error unmarshalling request for user %s: %v", keyStr, err)
 	}
@@ -1113,9 +1167,10 @@ func (sc *SecretManagerClient) GetWatchSystemParams() {
 			sc.muRbePp.Unlock()
 		}
 
-		// if keyStr == kconstants.RBE_PP_COMMITMENTS_KEY {
-		if strings.HasPrefix(keyStr, kconstants.RBE_PP_COMMITMENTS_KEY) {
-			err := sc.handleCommitmentsUpdate(keyStr, value, false, kv.ModRevision)
+		// TODO: the initial commitments will always be the same?
+		// only the CRS is randomly generated?
+		if keyStr == kconstants.RBE_PP_COMMITMENTS_KEY {
+			err := sc.handleCommitmentsUpdate(keyStr, value, kv.ModRevision)
 			if err != nil {
 				log.Errorf("[dev] failed to handle commitments update: %v", err)
 			} else {
@@ -1152,8 +1207,7 @@ func (sc *SecretManagerClient) GetWatchSystemParams() {
 					value := ev.Kv.Value
 
 					log.Infof("[dev] revisions for commitment key (%s): CreateRevision %d, ModRevision: %d", key, ev.Kv.CreateRevision, ev.Kv.ModRevision)
-					// TODO: the isWatchedResponse param is redundant - remove it
-					err := sc.handleCommitmentsUpdate(key, value, true, ev.Kv.ModRevision)
+					err := sc.handleCommitmentsUpdate(key, value, ev.Kv.ModRevision)
 					if err != nil {
 						log.Errorf("[dev] failed to handle commitments update: %v", err)
 					} else {
@@ -1248,7 +1302,7 @@ func (sc *SecretManagerClient) handleOpeningsUpdate(keyStr string, value []byte,
 		return fmt.Errorf("[dev] invalid key format for user openings: %s", keyStr)
 	}
 	idStr := parts[3]
-	revStr := parts[2]
+	// revStr := parts[2]
 
 	openingsProto := &kproto.Opening{}
 	err := gproto.Unmarshal([]byte(value), openingsProto)
@@ -1263,15 +1317,38 @@ func (sc *SecretManagerClient) handleOpeningsUpdate(keyStr string, value []byte,
 		opening = append(opening, g1)
 	}
 
-	sc.muUserOpenings.Lock()
-	if sc.userOpenings == nil {
-		sc.userOpenings = make(map[string]map[string][]*bls.G1)
+	// sc.muUserOpenings.Lock()
+	// if sc.userOpenings == nil {
+	// 	sc.userOpenings = make(map[string]map[string][]*bls.G1)
+	// }
+	// if sc.userOpenings[revStr] == nil {
+	// 	sc.userOpenings[revStr] = make(map[string][]*bls.G1)
+	// }
+	// sc.userOpenings[revStr][idStr] = opening
+	// sc.muUserOpenings.Unlock()
+
+	sc.muUserOpenings2.Lock()
+	if sc.userOpenings2 == nil {
+		sc.userOpenings2 = make(map[string][]*bls.G1)
 	}
-	if sc.userOpenings[revStr] == nil {
-		sc.userOpenings[revStr] = make(map[string][]*bls.G1)
+	sc.muLastRevisionForUser.Lock()
+	if sc.lastRevisionForUser == nil {
+		sc.lastRevisionForUser = make(map[string]int64)
 	}
-	sc.userOpenings[revStr][idStr] = opening
-	sc.muUserOpenings.Unlock()
+
+	lastRev, exists := sc.lastRevisionForUser[idStr]
+	if exists && lastRev >= modRevision {
+		log.Warnf("[dev] skipping outdated user opening update for user %s: revision %d <= lastRev %d",
+			idStr, modRevision, sc.lastRevisionForUser[idStr])
+	} else {
+		log.Infof("[dev] updating user opening for user: %s, with revision: %d ",
+			idStr, modRevision)
+		sc.userOpenings2[idStr] = opening
+		sc.lastRevisionForUser[idStr] = modRevision
+	}
+
+	sc.muLastRevisionForUser.Unlock()
+	sc.muUserOpenings2.Unlock()
 
 	log.Infof("[dev] saved user openings for key: %s, len: %d, revision: %d", keyStr, len(value), modRevision)
 
@@ -1288,12 +1365,15 @@ func (sc *SecretManagerClient) handleOpeningsUpdate(keyStr string, value []byte,
 	return nil
 }
 
+// TODO: refactor this: initially commitments is the same for all blocks
+// so I can just listen for new updates to blocks individually afterwards
+// split this method into two: one for initial full commitments
+// one for individual block updates
 func (sc *SecretManagerClient) handleCommitmentsUpdate(key string, value []byte,
-	isWatchedResponse bool, revision int64) error {
-
+	revision int64) error {
 	parts := strings.Split(key, "/")
 	if len(parts) == 4 {
-		log.Infof("[dev] this is a commitment update for a single block: %s", key)
+		log.Infof("[dev] this is a commitment update for a single block: %s, with size: %d", key, len(value))
 
 		blockIndexStr := parts[3]
 		blockIndex, err := strconv.Atoi(blockIndexStr)
@@ -1327,29 +1407,33 @@ func (sc *SecretManagerClient) handleCommitmentsUpdate(key string, value []byte,
 			}
 			sc.muLastRevisionForBlock.RUnlock()
 		} else {
+			// we won't start watching for commitment updates to blocks unless
+			// we have the rbePp initialized so we can ignore this error
 			return fmt.Errorf("[dev] rbePp is nil, cannot update single block commitment")
 		}
 		sc.muRbePp.Unlock()
 
-		sc.muRecentCommitments.Lock()
-		if sc.recentCommitments != nil {
-			// get the last revision's commitments
-			// update the last revision's commitments for this block
-			allRevisions := []int64{}
-			for rev := range sc.recentCommitments {
-				allRevisions = append(allRevisions, rev)
-			}
-			slices.Sort(allRevisions)
-			lastRevision := allRevisions[len(allRevisions)-1]
+		// TODO: there's no need to save all commitments anymore now
+		// sc.muRecentCommitments.Lock()
+		// if sc.recentCommitments != nil {
+		// 	// get the last revision's commitments
+		// 	// update the last revision's commitments for this block
+		// 	allRevisions := []int64{}
+		// 	for rev := range sc.recentCommitments {
+		// 		allRevisions = append(allRevisions, rev)
+		// 	}
+		// 	slices.Sort(allRevisions)
+		// 	lastRevision := allRevisions[len(allRevisions)-1]
 
-			lastCommitment := sc.recentCommitments[lastRevision]
-			lastCommitment[blockIndex] = commitment
-			sc.recentCommitments[revision] = lastCommitment
-		} else {
-			log.Infof("[dev] recentCommitments is nil, cannot update single block commitment")
-		}
-		sc.muRecentCommitments.Unlock()
+		// 	lastCommitment := sc.recentCommitments[lastRevision]
+		// 	lastCommitment[blockIndex] = commitment
+		// 	sc.recentCommitments[revision] = lastCommitment
+		// } else {
+		// 	log.Infof("[dev] recentCommitments is nil, cannot update single block commitment")
+		// }
+		// sc.muRecentCommitments.Unlock()
 
+		// TODO: won't update Openings right now
 		go sc.ListWatchOpeningsUpdate(revision)
 
 		return nil
@@ -1382,15 +1466,17 @@ func (sc *SecretManagerClient) handleCommitmentsUpdate(key string, value []byte,
 	}
 	sc.muRbePp.Unlock()
 
-	sc.muRecentCommitments.Lock()
-	if sc.recentCommitments == nil {
-		sc.recentCommitments = make(map[int64][]*bls.G1)
-	}
-	sc.recentCommitments[revision] = commitments
-	sc.muRecentCommitments.Unlock()
+	// TODO: there's no need to save all commitments anymore now
+	// sc.muRecentCommitments.Lock()
+	// if sc.recentCommitments == nil {
+	// 	sc.recentCommitments = make(map[int64][]*bls.G1)
+	// }
+	// sc.recentCommitments[revision] = commitments
+	// sc.muRecentCommitments.Unlock()
 
 	log.Infof("[dev] updated commitments from etcd for key: %s, revision: %d", key, revision)
 
+	// TODO: won't update Openings right now
 	go sc.ListWatchOpeningsUpdate(revision)
 
 	return nil

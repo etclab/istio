@@ -26,6 +26,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 	gproto "google.golang.org/protobuf/proto"
 	kconstants "istio.io/istio/security/pkg/key-curator/constants"
+	kceval "istio.io/istio/security/pkg/key-curator/eval"
 )
 
 // for lack of a better name using the prefix "history"
@@ -75,6 +76,8 @@ type KeyCuratorServer struct {
 
 	// todo: see how authenticators are used
 	Authenticators []security.Authenticator
+
+	logWriter *kceval.MLogWriter
 }
 
 func (kcs *KeyCuratorServer) ListWatchRBEUsers() {
@@ -450,7 +453,8 @@ func NewKeyCuratorServer(maxUsers int, podName string) *KeyCuratorServer {
 
 		registrationQueue: make(chan UserRequest, 100),
 		// pod id of istiod instance
-		leaseId: podName,
+		leaseId:   podName,
+		logWriter: kceval.NewMLogWriter(""),
 	}
 
 	go kcServer.TryAcquireLease(kcServer.leaseId)
@@ -581,6 +585,21 @@ func (kcs *KeyCuratorServer) FetchUpdate(_ context.Context, in *pb.UpdateRequest
 	return &pb.UserOpeningResponse{Opening: opening, Commitments: commitments}, nil
 }
 
+func (kcs *KeyCuratorServer) MarkReady(_ context.Context, in *pb.ReadyRequest) (*emptypb.Empty, error) {
+	userId := in.GetId()
+	log.Infof("[dev] received MarkReady request for user with id: %d", userId)
+
+	readyString := fmt.Sprintf("READY,%d,%d", userId, time.Now().UnixMicro())
+	go func() {
+		err := kcs.logWriter.Append(readyString)
+		if err != nil {
+			log.Errorf("[dev] failed to append READY event for user %d: %v", userId, err)
+		}
+	}()
+
+	return &emptypb.Empty{}, nil
+}
+
 func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 	source string) (*pb.UserOpeningResponse, error) {
 	publicKey := new(bls.G1)
@@ -632,13 +651,6 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 }
 
 func (kcs *KeyCuratorServer) UpdateSystemParamsInEtcd(id int) {
-	// serialize pp and store it in etcd
-	// rev, err := etcdutil.SavePublicParamsToEtcd(kcs.EtcdClient, kcs.pp, true)
-	// if err != nil {
-	// 	log.Errorf("[dev] failed to store public params in etcd: %v", err)
-	// 	return
-	// }
-
 	// only need to send commitments for the specific block to which id belongs
 	k := kcs.pp.IdToBlock(id)
 	commitmentForBlock := kcs.pp.Commitments[k]
@@ -651,9 +663,8 @@ func (kcs *KeyCuratorServer) UpdateSystemParamsInEtcd(id int) {
 
 	// serialize user openings and store it in etcd under the new commitments' revision
 	openings := kcs.kc.UserOpenings
-	// pp := kcs.kc.PP
-	// err = etcdutil.SaveUserOpeningsToEtcd(kcs.EtcdClient, id, pp, kcs.registeredIds, openings, rev)
-	err = etcdutil.SaveUserOpeningsToEtcd(kcs.EtcdClient, kcs.registeredIds, openings, rev)
+	pp := kcs.kc.PP
+	err = etcdutil.SaveUserOpeningsToEtcd(kcs.EtcdClient, id, pp, kcs.registeredIds, openings, rev)
 	if err != nil {
 		log.Errorf("[dev] failed to store user openings in etcd: %v", err)
 		return
@@ -667,6 +678,14 @@ func (kcs *KeyCuratorServer) SaveToHistory(id int, req *pb.RegisterRequest) {
 
 func (kcs *KeyCuratorServer) RegisterUser(_ context.Context, in *pb.RegisterRequest) (*pb.UserOpeningResponse, error) {
 	log.Infof("[dev] received register request for user with id: %d", in.GetId())
+
+	eventString := fmt.Sprintf("REGISTER,%d,%d", in.GetId(), time.Now().UnixMicro())
+	go func() {
+		err := kcs.logWriter.Append(eventString)
+		if err != nil {
+			log.Errorf("[dev] failed to append READY event for user %d: %v", in.GetId(), err)
+		}
+	}()
 
 	id := int(in.GetId())
 	// rethink the check for registered user ids
