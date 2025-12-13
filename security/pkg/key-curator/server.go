@@ -50,9 +50,10 @@ type RegistrationEvent struct {
 
 // TODO: rename this to something more meaningful
 type UserRequest struct {
-	id     int
-	req    *pb.RegisterRequest
-	source string
+	id           int
+	req          *pb.RegisterRequest
+	source       string
+	registerTime int64
 
 	respChan chan *pb.UserOpeningResponse
 }
@@ -396,7 +397,8 @@ func (kcs *KeyCuratorServer) listenRegistrationRequests() {
 			}
 
 			// Process the registration request (one at a time)
-			result, err := kcs.registerUserUtil(request.id, request.req, request.source)
+			result, err := kcs.registerUserUtil(request.id, request.req,
+				request.source, request.registerTime)
 			if err != nil {
 				log.Errorf("[dev] error processing registration request for user %d: %v", request.id, err)
 				continue
@@ -589,9 +591,9 @@ func (kcs *KeyCuratorServer) MarkReady(_ context.Context, in *pb.ReadyRequest) (
 	userId := in.GetId()
 	log.Infof("[dev] received MarkReady request for user with id: %d", userId)
 
-	readyString := fmt.Sprintf("READY,%d,%d", userId, time.Now().UnixMicro())
+	eventString := fmt.Sprintf("%s,%d", in.GetPrefix(), time.Now().UnixMicro())
 	go func() {
-		err := kcs.logWriter.Append(readyString)
+		err := kcs.logWriter.Append(eventString)
 		if err != nil {
 			log.Errorf("[dev] failed to append READY event for user %d: %v", userId, err)
 		}
@@ -601,7 +603,7 @@ func (kcs *KeyCuratorServer) MarkReady(_ context.Context, in *pb.ReadyRequest) (
 }
 
 func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
-	source string) (*pb.UserOpeningResponse, error) {
+	source string, registerTime int64) (*pb.UserOpeningResponse, error) {
 	publicKey := new(bls.G1)
 	publicKey.SetBytes(in.GetPublicKey().GetPoint())
 
@@ -615,6 +617,30 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 			xi[i] = xg1
 		}
 	}
+
+	var usersBeforeMe []int64
+	for registeredId := range kcs.registeredIds {
+		usersBeforeMe = append(usersBeforeMe, int64(registeredId))
+	}
+
+	usersBeforeMeStringArr := make([]string, len(usersBeforeMe))
+	for i, v := range usersBeforeMe {
+		usersBeforeMeStringArr[i] = fmt.Sprintf("%d", v)
+	}
+
+	usersBeforeMeJoined := strings.Join(usersBeforeMeStringArr, "|")
+
+	eventString := fmt.Sprintf("REGISTER,%d,%s,%d", in.GetId(),
+		usersBeforeMeJoined, registerTime)
+	// the wait time a user experienced before registering can be high if many users
+	// are registering at the same time
+	// usersBeforeMeJoined, time.Now().UnixMicro())
+	go func() {
+		err := kcs.logWriter.Append(eventString)
+		if err != nil {
+			log.Errorf("[dev] failed to append REGISTER event for user %d: %v", in.GetId(), err)
+		}
+	}()
 
 	kcs.kc.RegisterUser(id, publicKey, xi)
 	kcs.addToHistory(in.Token, in.Ip, in.Port, int(in.Id), publicKey, xi, source)
@@ -647,7 +673,8 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 		log.Infof("[dev] skip updating system params in etcd, not the leader")
 	}
 
-	return &pb.UserOpeningResponse{Opening: opening, Commitments: commitments}, nil
+	return &pb.UserOpeningResponse{Opening: opening, Commitments: commitments,
+		UsersBeforeMe: usersBeforeMe}, nil
 }
 
 func (kcs *KeyCuratorServer) UpdateSystemParamsInEtcd(id int) {
@@ -679,13 +706,7 @@ func (kcs *KeyCuratorServer) SaveToHistory(id int, req *pb.RegisterRequest) {
 func (kcs *KeyCuratorServer) RegisterUser(_ context.Context, in *pb.RegisterRequest) (*pb.UserOpeningResponse, error) {
 	log.Infof("[dev] received register request for user with id: %d", in.GetId())
 
-	eventString := fmt.Sprintf("REGISTER,%d,%d", in.GetId(), time.Now().UnixMicro())
-	go func() {
-		err := kcs.logWriter.Append(eventString)
-		if err != nil {
-			log.Errorf("[dev] failed to append READY event for user %d: %v", in.GetId(), err)
-		}
-	}()
+	registerTime := time.Now().UnixMicro()
 
 	id := int(in.GetId())
 	// rethink the check for registered user ids
@@ -700,10 +721,11 @@ func (kcs *KeyCuratorServer) RegisterUser(_ context.Context, in *pb.RegisterRequ
 	}
 
 	userReq := UserRequest{
-		id:       id,
-		req:      in,
-		source:   "api",
-		respChan: make(chan *pb.UserOpeningResponse, 1),
+		id:           id,
+		req:          in,
+		source:       "api",
+		registerTime: registerTime,
+		respChan:     make(chan *pb.UserOpeningResponse, 1),
 	}
 
 	kcs.registrationQueue <- userReq

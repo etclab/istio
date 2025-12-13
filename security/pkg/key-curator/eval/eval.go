@@ -1,7 +1,6 @@
 package kceval
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -51,19 +50,23 @@ func NewMLogWriter(filename string) *MLogWriter {
 // <event-type>,<user-id>,<timestamp>
 // event-type: REGISTER, READY
 func (mlw *MLogWriter) Append(entry string) error {
-	mlw.lock.Lock()
-	defer mlw.lock.Unlock()
+	// TODO: fix this function when ingress-gateway and istiod start at the same time
+	// TODO: the issue stems from the `kubectl patch` command used to add the eval volume into istiod
+	// TODO: triggering a restart of istiod; in the meantime, ingress-gateway already sends its events
+	// TODO: for logging, but istiod doesn't have the volume mounted yet for storing logs leading to errors here
+	// mlw.lock.Lock()
+	// defer mlw.lock.Unlock()
 
-	file, err := os.OpenFile(mlw.filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to open file: %v", err)
-	}
-	defer file.Close()
+	// file, err := os.OpenFile(mlw.filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	// if err != nil {
+	// 	return fmt.Errorf("failed to open file: %v", err)
+	// }
+	// defer file.Close()
 
-	_, err = file.WriteString(entry + "\n")
-	if err != nil {
-		return fmt.Errorf("failed to write to file: %v", err)
-	}
+	// _, err = file.WriteString(entry + "\n")
+	// if err != nil {
+	// 	return fmt.Errorf("failed to write to file: %v", err)
+	// }
 
 	return nil
 }

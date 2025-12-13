@@ -27,6 +27,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -196,6 +197,16 @@ type SecretManagerClient struct {
 	stop  chan struct{}
 
 	caRootPath string
+
+	// userIdsBeforeMe tracks user ids that were registered before this user
+	userIdsBeforeMe   []int64
+	muUserIdsBeforeMe sync.RWMutex
+	// validUsersMap tracks user ids created before the new user
+	validUsersMap   map[int64]bool
+	muValidUsersMap sync.RWMutex
+
+	readyChan chan bool
+	amIReady  atomic.Value
 }
 
 type secretCache struct {
@@ -313,6 +324,10 @@ func NewSecretManagerClient(caClient security.Client, options *security.Options)
 
 func (sc *SecretManagerClient) SetKCClient(skc security.KeyCuratorClient) {
 	sc.kcClient = skc
+}
+
+func (sc *SecretManagerClient) SetReadyChannel(readyChan chan bool) {
+	sc.readyChan = readyChan
 }
 
 func (sc *SecretManagerClient) SetupEtcdClient() {
@@ -757,6 +772,9 @@ func (sc *SecretManagerClient) updatePodValidationWithOpeningUtil(userId string,
 	}
 	sc.podsValidityMap2[key] = result
 
+	go sc.addOtherUserAsVerified(result, otherUser.Id, thisUser.Id())
+	go sc.ackOpeningProcessed(result, otherUser.Id, thisUser.Id())
+
 	log.Infof("[dev] updated pod validity map2 with key: %s, result: %v", key, result)
 
 	/*
@@ -820,6 +838,103 @@ func (sc *SecretManagerClient) updatePodValidationWithOpeningUtil(userId string,
 	}
 
 	go sc.retryOneFromErroredWaiting()
+}
+
+// user is ready once it verifies openings from all existing old users
+func (sc *SecretManagerClient) AmIReady(myUserId int) {
+	if sc.amIReady.Load() != nil && sc.amIReady.Load().(bool) {
+		log.Infof("[dev] I am already ready, skipping check")
+		return
+	}
+
+	sc.muUserIdsBeforeMe.RLock()
+	defer sc.muUserIdsBeforeMe.RUnlock()
+
+	sc.muValidUsersMap.RLock()
+	defer sc.muValidUsersMap.RUnlock()
+
+	log.Infof("[dev] checking if I am ready")
+
+	ready := true
+	for _, userId := range sc.userIdsBeforeMe {
+		valid, exists := sc.validUsersMap[userId]
+		if !valid || !exists {
+			ready = false
+			log.Infof("[dev] I am not ready yet, user id %d is not verified yet", userId)
+			break
+		}
+	}
+
+	if ready {
+		log.Infof("[dev] I am ready now!")
+		sc.amIReady.Store(true)
+		sc.readyChan <- true
+
+		prefixString := fmt.Sprintf("READY,%d", myUserId)
+		err := sc.kcClient.MarkReady(int64(myUserId), prefixString)
+		if err != nil {
+			log.Errorf("[dev] failed to mark myself as ready in key curator: %v", err)
+		} else {
+			log.Infof("[dev] marked myself as ready in key curator")
+		}
+	}
+}
+
+func (sc *SecretManagerClient) addOtherUserAsVerified(result bool, otherUserId int64,
+	myUserId int) {
+	// if the pod is already ready, skip
+	if sc.amIReady.Load() != nil && sc.amIReady.Load().(bool) {
+		log.Infof("[dev] I am already ready, skipping adding user %d as verified", otherUserId)
+		return
+	}
+
+	// if result is false, skip
+	if !result {
+		log.Infof("[dev] user %d is not ready, result is false", otherUserId)
+		return
+	}
+
+	sc.muUserIdsBeforeMe.RLock()
+
+	if len(sc.userIdsBeforeMe) == 0 {
+		log.Infof("[dev] user %d is ready, no other users before it", otherUserId)
+	} else {
+		if slices.Contains(sc.userIdsBeforeMe, otherUserId) {
+			log.Infof("[dev] user %d is ready, it is in the list of users before it", otherUserId)
+			sc.muValidUsersMap.Lock()
+
+			log.Infof("[dev] adding user id %d to valid users map", otherUserId)
+			sc.validUsersMap[otherUserId] = true
+
+			sc.muValidUsersMap.Unlock()
+		} else {
+			log.Infof("[dev] user %d is ready, it is not in the list of users before it", otherUserId)
+		}
+	}
+	sc.muUserIdsBeforeMe.RUnlock()
+
+	defer func() {
+		go sc.AmIReady(myUserId)
+	}()
+}
+
+// sends a notification to key curator that opening for otherUserId has been processed
+// by this user (myUserId)
+func (sc *SecretManagerClient) ackOpeningProcessed(result bool, otherUserId int64,
+	myUserId int) {
+	// if result is false, skip
+	if !result {
+		log.Infof("[dev] user %d is not ready, result is false", otherUserId)
+		return
+	}
+
+	prefixString := fmt.Sprintf("ACK_OPENING,%d,%d", otherUserId, myUserId)
+	err := sc.kcClient.MarkReady(int64(myUserId), prefixString)
+	if err != nil {
+		log.Errorf("[dev] failed to send ACK_OPENING in key curator: %v", err)
+	} else {
+		log.Infof("[dev] send ACK_OPENING key curator")
+	}
 }
 
 func (sc *SecretManagerClient) UpdatePodValidationWithOpening() {
@@ -1234,18 +1349,15 @@ func (sc *SecretManagerClient) GetWatchSystemParams() {
 }
 
 func (sc *SecretManagerClient) ListWatchOpeningsUpdate(currentRevision int64) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	// openingsRes, err := sc.etcdClient.Get(ctx, kconstants.RBE_OPENINGS_KEY, clientv3.WithPrefix(), clientv3.WithRev(currentRevision+1))
-	openingsRes, err := sc.etcdClient.Get(ctx, fmt.Sprintf("%s/%d", kconstants.RBE_OPENINGS_KEY, currentRevision),
-		clientv3.WithPrefix(), clientv3.WithRev(currentRevision+1))
+	openingsRes, err := sc.etcdClient.Get(context.Background(), fmt.Sprintf("%s/%d", kconstants.RBE_OPENINGS_KEY, currentRevision),
+		clientv3.WithPrefix())
 	if err != nil {
 		log.Errorf("[dev] failed to fetch openings from etcd: %v", err)
 		return
 	}
 
-	log.Infof("[dev] fetched %d openings from etcd", len(openingsRes.Kvs))
+	log.Infof("[dev] fetched %d openings from etcd, currently the revision is: %d", len(openingsRes.Kvs), openingsRes.Header.Revision)
 
 	for _, kv := range openingsRes.Kvs {
 		value := kv.Value
@@ -1674,12 +1786,24 @@ func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(rbeId *security.RbeId,
 		// create user
 		user = rbe.NewUserWithSecret(pp, int(id), sk)
 
-		// TODO: during registration send the ip, port, token, id, and public key (user includes th public key?)
-		commitments, opening, err := sc.kcClient.RegisterUser(user, rbeId)
+		commitments, opening, userIdsBeforeMe, err := sc.kcClient.RegisterUser(user, rbeId)
 		if err != nil {
 			log.Errorf("[dev] err on RegisterUser(): %v", err)
 			return nil, err
 		}
+
+		sc.muUserIdsBeforeMe.Lock()
+		sc.userIdsBeforeMe = userIdsBeforeMe
+
+		sc.muValidUsersMap.Lock()
+		if sc.validUsersMap == nil {
+			sc.validUsersMap = make(map[int64]bool)
+		}
+		for _, uid := range userIdsBeforeMe {
+			sc.validUsersMap[uid] = false
+		}
+		sc.muValidUsersMap.Unlock()
+		sc.muUserIdsBeforeMe.Unlock()
 
 		user.Update(commitments, opening)
 	}

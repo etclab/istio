@@ -17,6 +17,7 @@ service KeyCurator {
 
 message ReadyRequest {
     int64 id = 1;
+    string prefix = 2;
 }
 
 message Empty {}
@@ -37,6 +38,7 @@ message RegisterRequest {
 message UserOpeningResponse {
     repeated rbe.proto.G1 commitments = 1; 
     repeated rbe.proto.G1 opening = 2; 
+    repeated int64 usersBeforeMe = 3;
 }
 
 message UpdateRequest {

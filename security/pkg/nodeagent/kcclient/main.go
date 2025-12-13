@@ -112,6 +112,21 @@ func NewKCClient(opts *security.Options, tlsOpts *TLSOptions) (security.KeyCurat
 	return c, nil
 }
 
+func (c *KCClient) MarkReady(id int64, prefix string) error {
+	req := &pb.ReadyRequest{
+		Id:     id,
+		Prefix: prefix,
+	}
+
+	ctx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs("ClusterID", c.opts.ClusterID))
+	_, err := c.client.MarkReady(ctx, req)
+	if err != nil {
+		return fmt.Errorf("[dev] err on MarkReady(): %v", err)
+	}
+
+	return nil
+}
+
 func (c *KCClient) FetchAllUpdates() ([]*bls.G1, [][]*bls.G1, []*security.RbeId, error) {
 	ctx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs("ClusterID", c.opts.ClusterID))
 	updResp, err := c.client.FetchAllUpdates(ctx, &emptypb.Empty{})
@@ -196,8 +211,9 @@ func getCommitmentsOpenings(uoResp *pb.UserOpeningResponse) ([]*bls.G1, []*bls.G
 	return commitments, opening
 }
 
-// func (c *KCClient) RegisterUser(user *rbe.User, id int32) ([]*bls.G1, []*bls.G1, error) {
-func (c *KCClient) RegisterUser(user *rbe.User, rbeId *security.RbeId) ([]*bls.G1, []*bls.G1, error) {
+// return values: commitments, opening, user-ids-before-me, error
+func (c *KCClient) RegisterUser(user *rbe.User, rbeId *security.RbeId) ([]*bls.G1,
+	[]*bls.G1, []int64, error) {
 	xi := user.Xi()
 
 	xiProto := make([]*rbeproto.G1, len(xi))
@@ -224,11 +240,13 @@ func (c *KCClient) RegisterUser(user *rbe.User, rbeId *security.RbeId) ([]*bls.G
 	regR, err := c.client.RegisterUser(ctx, regReq)
 	if err != nil {
 		log.Errorf("[dev] err on RegisterUser(): %v", err)
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	commitments, opening := getCommitmentsOpenings(regR)
 
-	return commitments, opening, nil
+	userIdsBeforeMe := regR.GetUsersBeforeMe()
+
+	return commitments, opening, userIdsBeforeMe, nil
 }
 
 func (c *KCClient) FetchPublicParams() (*rbe.PublicParams, error) {
