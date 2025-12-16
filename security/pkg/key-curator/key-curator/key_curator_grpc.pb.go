@@ -24,6 +24,7 @@ const (
 	KeyCurator_FetchAllUpdates_FullMethodName   = "/keycurator.KeyCurator/FetchAllUpdates"
 	KeyCurator_FetchPublicParams_FullMethodName = "/keycurator.KeyCurator/FetchPublicParams"
 	KeyCurator_RegisterUser_FullMethodName      = "/keycurator.KeyCurator/RegisterUser"
+	KeyCurator_MarkReady_FullMethodName         = "/keycurator.KeyCurator/MarkReady"
 )
 
 // KeyCuratorClient is the client API for KeyCurator service.
@@ -34,6 +35,7 @@ type KeyCuratorClient interface {
 	FetchAllUpdates(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*AllUpdatesResponse, error)
 	FetchPublicParams(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*PublicParamsResponse, error)
 	RegisterUser(ctx context.Context, in *RegisterRequest, opts ...grpc.CallOption) (*UserOpeningResponse, error)
+	MarkReady(ctx context.Context, in *ReadyRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 }
 
 type keyCuratorClient struct {
@@ -84,6 +86,16 @@ func (c *keyCuratorClient) RegisterUser(ctx context.Context, in *RegisterRequest
 	return out, nil
 }
 
+func (c *keyCuratorClient) MarkReady(ctx context.Context, in *ReadyRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, KeyCurator_MarkReady_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // KeyCuratorServer is the server API for KeyCurator service.
 // All implementations must embed UnimplementedKeyCuratorServer
 // for forward compatibility.
@@ -92,6 +104,7 @@ type KeyCuratorServer interface {
 	FetchAllUpdates(context.Context, *emptypb.Empty) (*AllUpdatesResponse, error)
 	FetchPublicParams(context.Context, *emptypb.Empty) (*PublicParamsResponse, error)
 	RegisterUser(context.Context, *RegisterRequest) (*UserOpeningResponse, error)
+	MarkReady(context.Context, *ReadyRequest) (*emptypb.Empty, error)
 	mustEmbedUnimplementedKeyCuratorServer()
 }
 
@@ -113,6 +126,9 @@ func (UnimplementedKeyCuratorServer) FetchPublicParams(context.Context, *emptypb
 }
 func (UnimplementedKeyCuratorServer) RegisterUser(context.Context, *RegisterRequest) (*UserOpeningResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RegisterUser not implemented")
+}
+func (UnimplementedKeyCuratorServer) MarkReady(context.Context, *ReadyRequest) (*emptypb.Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method MarkReady not implemented")
 }
 func (UnimplementedKeyCuratorServer) mustEmbedUnimplementedKeyCuratorServer() {}
 func (UnimplementedKeyCuratorServer) testEmbeddedByValue()                    {}
@@ -207,6 +223,24 @@ func _KeyCurator_RegisterUser_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _KeyCurator_MarkReady_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReadyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KeyCuratorServer).MarkReady(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KeyCurator_MarkReady_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KeyCuratorServer).MarkReady(ctx, req.(*ReadyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // KeyCurator_ServiceDesc is the grpc.ServiceDesc for KeyCurator service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -229,6 +263,10 @@ var KeyCurator_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RegisterUser",
 			Handler:    _KeyCurator_RegisterUser_Handler,
+		},
+		{
+			MethodName: "MarkReady",
+			Handler:    _KeyCurator_MarkReady_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

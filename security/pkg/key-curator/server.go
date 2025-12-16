@@ -29,6 +29,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 	gproto "google.golang.org/protobuf/proto"
 	kconstants "istio.io/istio/security/pkg/key-curator/constants"
+	kceval "istio.io/istio/security/pkg/key-curator/eval"
 	kcUtil "istio.io/istio/security/pkg/key-curator/util"
 )
 
@@ -57,9 +58,10 @@ type RegistrationEvent struct {
 
 // TODO: rename this to something more meaningful
 type UserRequest struct {
-	id     int
-	req    *pb.RegisterRequest
-	source string
+	id           int
+	req          *pb.RegisterRequest
+	source       string
+	registerTime int64
 
 	respChan chan *pb.UserOpeningResponse
 }
@@ -84,6 +86,8 @@ type KeyCuratorServer struct {
 
 	// todo: see how authenticators are used
 	Authenticators []security.Authenticator
+
+	logWriter *kceval.MLogWriter
 }
 
 func (kcs *KeyCuratorServer) ListWatchRBEUsers() {
@@ -424,7 +428,8 @@ func (kcs *KeyCuratorServer) listenRegistrationRequests() {
 			}
 
 			// Process the registration request (one at a time)
-			result, err := kcs.registerUserUtil(request.id, request.req, request.source)
+			result, err := kcs.registerUserUtil(request.id, request.req,
+				request.source, request.registerTime)
 			if err != nil {
 				log.Errorf("[dev] error processing registration request for user %d: %v", request.id, err)
 				continue
@@ -483,7 +488,8 @@ func NewKeyCuratorServer(maxUsers int, podName string) *KeyCuratorServer {
 
 		registrationQueue: make(chan UserRequest, 100),
 		// pod id of istiod instance
-		leaseId: podName,
+		leaseId:   podName,
+		logWriter: kceval.NewMLogWriter(""),
 	}
 
 	go kcServer.TryAcquireLease(kcServer.leaseId)
@@ -640,8 +646,23 @@ func counterAttestationToProto(counterAttestation *trinc.CounterAttestation) *pb
 	return attestationProto
 }
 
+func (kcs *KeyCuratorServer) MarkReady(_ context.Context, in *pb.ReadyRequest) (*emptypb.Empty, error) {
+	userId := in.GetId()
+	log.Infof("[dev] received MarkReady request for user with id: %d", userId)
+
+	eventString := fmt.Sprintf("%s,%d", in.GetPrefix(), time.Now().UnixMicro())
+	go func() {
+		err := kcs.logWriter.Append(eventString)
+		if err != nil {
+			log.Errorf("[dev] failed to append READY event for user %d: %v", userId, err)
+		}
+	}()
+
+	return &emptypb.Empty{}, nil
+}
+
 func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
-	source string) (*pb.UserOpeningResponse, error) {
+	source string, registerTime int64) (*pb.UserOpeningResponse, error) {
 	publicKey := new(bls.G1)
 	publicKey.SetBytes(in.GetPublicKey().GetPoint())
 
@@ -714,6 +735,29 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 		RequestBytes:     regMsg,
 	}
 	//
+	var usersBeforeMe []int64
+	for registeredId := range kcs.registeredIds {
+		usersBeforeMe = append(usersBeforeMe, int64(registeredId))
+	}
+
+	usersBeforeMeStringArr := make([]string, len(usersBeforeMe))
+	for i, v := range usersBeforeMe {
+		usersBeforeMeStringArr[i] = fmt.Sprintf("%d", v)
+	}
+
+	usersBeforeMeJoined := strings.Join(usersBeforeMeStringArr, "|")
+
+	eventString := fmt.Sprintf("REGISTER,%d,%s,%d", in.GetId(),
+		usersBeforeMeJoined, registerTime)
+	// the wait time a user experienced before registering can be high if many users
+	// are registering at the same time
+	// usersBeforeMeJoined, time.Now().UnixMicro())
+	go func() {
+		err := kcs.logWriter.Append(eventString)
+		if err != nil {
+			log.Errorf("[dev] failed to append REGISTER event for user %d: %v", in.GetId(), err)
+		}
+	}()
 
 	kcs.kc.RegisterUser(id, publicKey, xi)
 	kcs.addToHistory(in.Token, in.Ip, in.Port, int(in.Id), publicKey, xi, in,
@@ -724,6 +768,7 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 		opening = append(opening, &proto.G1{Point: v.Bytes()})
 	}
 
+	// TODO: only send commitments for the blocks that changed
 	commitments := []*proto.G1{}
 	for _, v := range kcs.kc.PP.Commitments {
 		commitments = append(commitments, &proto.G1{Point: v.Bytes()})
@@ -739,26 +784,30 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 	// send updates on every registration
 	if kcs.isLeader.Load() {
 		log.Infof("[dev] I'm the leader, updating system params in etcd")
-		kcs.UpdateSystemParamsInEtcd()
+		kcs.UpdateSystemParamsInEtcd(id)
 	} else {
 		log.Infof("[dev] skip updating system params in etcd, not the leader")
 	}
 
 	return &pb.UserOpeningResponse{Opening: opening, Commitments: commitments,
-		CounterAttestation: attestationProto, Proof: pbProof}, nil
+		CounterAttestation: attestationProto, Proof: pbProof, UsersBeforeMe: usersBeforeMe}, nil
 }
 
-func (kcs *KeyCuratorServer) UpdateSystemParamsInEtcd() {
-	// serialize pp and store it in etcd
-	rev, err := etcdutil.SavePublicParamsToEtcd(kcs.EtcdClient, kcs.pp, true)
+func (kcs *KeyCuratorServer) UpdateSystemParamsInEtcd(id int) {
+	// only need to send commitments for the specific block to which id belongs
+	k := kcs.pp.IdToBlock(id)
+	commitmentForBlock := kcs.pp.Commitments[k]
+
+	rev, err := etcdutil.SaveCommitmentBlockToEtcd(kcs.EtcdClient, k, commitmentForBlock)
 	if err != nil {
-		log.Errorf("[dev] failed to store public params in etcd: %v", err)
+		log.Errorf("[dev] failed to store commitment for block %d in etcd: %v", k, err)
 		return
 	}
 
 	// serialize user openings and store it in etcd under the new commitments' revision
 	openings := kcs.kc.UserOpenings
-	err = etcdutil.SaveUserOpeningsToEtcd(kcs.EtcdClient, kcs.registeredIds, openings, rev)
+	pp := kcs.kc.PP
+	err = etcdutil.SaveUserOpeningsToEtcd(kcs.EtcdClient, id, pp, kcs.registeredIds, openings, rev)
 	if err != nil {
 		log.Errorf("[dev] failed to store user openings in etcd: %v", err)
 		return
@@ -767,6 +816,8 @@ func (kcs *KeyCuratorServer) UpdateSystemParamsInEtcd() {
 
 func (kcs *KeyCuratorServer) RegisterUser(_ context.Context, in *pb.RegisterRequest) (*pb.UserOpeningResponse, error) {
 	log.Infof("[dev] received register request for user with id: %d", in.GetId())
+
+	registerTime := time.Now().UnixMicro()
 
 	id := int(in.GetId())
 	// rethink the check for registered user ids
@@ -781,10 +832,11 @@ func (kcs *KeyCuratorServer) RegisterUser(_ context.Context, in *pb.RegisterRequ
 	}
 
 	userReq := UserRequest{
-		id:       id,
-		req:      in,
-		source:   "api",
-		respChan: make(chan *pb.UserOpeningResponse, 1),
+		id:           id,
+		req:          in,
+		source:       "api",
+		registerTime: registerTime,
+		respChan:     make(chan *pb.UserOpeningResponse, 1),
 	}
 
 	kcs.registrationQueue <- userReq

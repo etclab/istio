@@ -286,9 +286,10 @@ type Client interface {
 type KeyCuratorClient interface {
 	Close()
 	FetchPublicParams() (*rbe.PublicParams, error)
-	RegisterUser(*rbe.User, *RbeId) ([]*bls.G1, []*bls.G1, *bls.G1, error)
+	RegisterUser(*rbe.User, *RbeId) ([]*bls.G1, []*bls.G1, *bls.G1, []int64, error)
 	FetchUpdate(int64) ([]*bls.G1, []*bls.G1, *bls.G1, error)
 	FetchAllUpdates(*rbe.PublicParams) ([]*bls.G1, [][]*bls.G1, []*RbeId, error)
+	MarkReady(int64, string) error
 }
 
 type RBESecretManager interface {

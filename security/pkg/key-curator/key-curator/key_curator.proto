@@ -12,6 +12,12 @@ service KeyCurator {
     rpc FetchAllUpdates(google.protobuf.Empty) returns (AllUpdatesResponse) {}
     rpc FetchPublicParams(google.protobuf.Empty) returns (PublicParamsResponse) {}
     rpc RegisterUser(RegisterRequest) returns (UserOpeningResponse) {}
+    rpc MarkReady(ReadyRequest) returns (google.protobuf.Empty) {}
+}
+
+message ReadyRequest {
+    int64 id = 1;
+    string prefix = 2;
 }
 
 message Empty {}
@@ -34,6 +40,7 @@ message UserOpeningResponse {
     repeated rbe.proto.G1 opening = 2; 
     CounterAttestation counterAttestation = 3;
     rbe.proto.G1 proof = 4;
+    repeated int64 usersBeforeMe = 5;
 }
 
 message UpdateRequest {

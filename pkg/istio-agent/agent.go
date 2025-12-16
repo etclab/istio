@@ -148,6 +148,8 @@ type Agent struct {
 
 	// Signals true completion (e.g. with delayed graceful termination of Envoy)
 	wg sync.WaitGroup
+
+	readyChan chan bool
 }
 
 // AgentOptions contains additional config for the agent, not included in ProxyConfig.
@@ -249,6 +251,7 @@ func NewAgent(proxyConfig *mesh.ProxyConfig, agentOpts *AgentOptions, sopts *sec
 		secOpts:     sopts,
 		envoyOpts:   eopts,
 		fileWatcher: filewatcher.NewWatcher(),
+		readyChan:   make(chan bool),
 	}
 }
 
@@ -557,6 +560,9 @@ func (a *Agent) initSdsServer() error {
 			go a.secretCache.UpdatePodValidationWithUser()
 			go a.secretCache.VerifyRegisteredUser()
 
+			// wait until all users before you have processed your updates
+			// a.readyChan <- true
+
 			// TODO: enable this to renew certificates before they expire
 			// TODO: how would you handle unregistering ids from key curator?
 			// TODO: think about storing all these information in a filename
@@ -572,7 +578,13 @@ func (a *Agent) initSdsServer() error {
 			// })
 			// a.secretCache.UpdateUserOpenings()
 		}()
+	} else {
+		a.readyChan <- true
 	}
+
+	// wait until all the services (within your block) before you have processed
+	// your update
+	<-a.readyChan
 
 	return nil
 }
@@ -939,7 +951,7 @@ func (a *Agent) newSecretManager() (*cache.SecretManagerClient, error) {
 
 	sMClient, err := cache.NewSecretManagerClient(caClient, a.secOpts)
 	sMClient.SetKCClient(kcClient)
-
+	sMClient.SetReadyChannel(a.readyChan)
 	sMClient.SetupEtcdClient()
 
 	return sMClient, err
