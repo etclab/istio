@@ -14,6 +14,8 @@ import (
 	"k8s.io/client-go/rest"
 
 	bls "github.com/cloudflare/circl/ecc/bls12381"
+	"github.com/etclab/rbe/proto"
+	gproto "google.golang.org/protobuf/proto"
 	cniconsts "istio.io/istio/cni/pkg/constants"
 	"istio.io/istio/pkg/log"
 	"istio.io/istio/pkg/security"
@@ -22,6 +24,8 @@ import (
 	authenticationv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+const RBE_PP_FILE = "/var/run/rbe-pp/rbe-pp.txt"
 
 func GenerateNonce() (string, error) {
 	nonceBytes := make([]byte, 32)
@@ -264,4 +268,26 @@ func CheckPodValidity(rbeId *security.RbeId, secret *security.RbeSecretItem) (re
 	}
 
 	return nonceHash.IsEqual(decryptedNonce)
+}
+
+func TryParseRbePpFromFile() (*rbe.PublicParams, error) {
+	filename := RBE_PP_FILE
+
+	ppBytes, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, fmt.Errorf("could not read RBE public params file: %w", err)
+	}
+
+	// parse the public params from the file
+	ppProto := &proto.PublicParams{}
+	err = gproto.Unmarshal(ppBytes, ppProto)
+	if err != nil {
+		return nil, fmt.Errorf("could not unmarshal RBE public params from file: %w", err)
+	}
+
+	pp := new(rbe.PublicParams)
+	pp.FromProto(ppProto)
+
+	log.Infof("[dev] successfully parsed RBE public params from file: %s", filename)
+	return pp, nil
 }

@@ -54,6 +54,7 @@ import (
 	kconstants "istio.io/istio/security/pkg/key-curator/constants"
 	kproto "istio.io/istio/security/pkg/key-curator/key-curator"
 	kcUtil "istio.io/istio/security/pkg/key-curator/util"
+	keycurator "istio.io/istio/security/pkg/key-curator/util"
 	"istio.io/istio/security/pkg/monitoring"
 	nodeagentutil "istio.io/istio/security/pkg/nodeagent/util"
 	pkiutil "istio.io/istio/security/pkg/pki/util"
@@ -1171,7 +1172,20 @@ func (sc *SecretManagerClient) handleRegisteredUserUpdate(keyStr string, value [
 
 // fetches and listens for updates to public params and user openings from etcd
 func (sc *SecretManagerClient) GetWatchSystemParams() {
-	sysParamsRes, err := sc.etcdClient.Get(context.Background(), kconstants.RBE_SYSTEM_PREFIX, clientv3.WithPrefix())
+	// before making a call for system params, ensure public params are restored from file
+	pp, err := keycurator.TryParseRbePpFromFile()
+	if err != nil {
+		log.Errorf("[dev] failed to parse rbe public params from file: %v", err)
+	} else {
+		sc.muRbePp.Lock()
+		sc.rbePp = pp
+		sc.muRbePp.Unlock()
+
+		log.Infof("[dev] restored rbe public params from file before fetching from etcd")
+	}
+
+	sysParamsRes, err := sc.etcdClient.Get(context.Background(), kconstants.RBE_PP_COMMITMENTS_KEY, clientv3.WithPrefix(),
+		clientv3.WithSort(clientv3.SortByModRevision, clientv3.SortAscend))
 	if err != nil {
 		log.Errorf("[dev] failed to fetch system params from etcd: %v", err)
 		return
@@ -1186,105 +1200,121 @@ func (sc *SecretManagerClient) GetWatchSystemParams() {
 
 		log.Infof("[dev] received key: %s, len(value): %d", key, len(value))
 
-		// check if key is for public params
-		if keyStr == kconstants.RBE_PP_KEY {
-			ppProto := &proto.PublicParams{}
-			err := gproto.Unmarshal([]byte(value), ppProto)
-			if err != nil {
-				log.Errorf("[dev] failed to unmarshal public params from etcd: %v", err)
-				return
-			}
+		/*
+			// check if key is for public params
+			if keyStr == kconstants.RBE_PP_KEY {
+				ppProto := &proto.PublicParams{}
+				err := gproto.Unmarshal([]byte(value), ppProto)
+				if err != nil {
+					log.Errorf("[dev] failed to unmarshal public params from etcd: %v", err)
+					return
+				}
 
-			pp := new(rbe.PublicParams)
-			pp.FromProto(ppProto)
-			sc.muRbePp.Lock()
-			if sc.rbePp == nil {
-				sc.rbePp = pp
-			} else {
-				sc.rbePp.MaxUsers = pp.MaxUsers
-				sc.rbePp.BlockSize = pp.BlockSize
-				sc.rbePp.NumBlocks = pp.NumBlocks
-				sc.rbePp.G1 = pp.G1
-				sc.rbePp.G2 = pp.G2
-			}
-			sc.muRbePp.Unlock()
+				pp := new(rbe.PublicParams)
+				pp.FromProto(ppProto)
 
-			log.Infof("[dev] saved public params from etcd")
-		}
-
-		if keyStr == kconstants.RBE_PP_CRS_H1_KEY {
-			crsH1Proto := &kproto.H1{}
-			err := gproto.Unmarshal([]byte(value), crsH1Proto)
-			if err != nil {
-				log.Errorf("[dev] failed to unmarshal crsH1 from etcd: %v", err)
-				return
-			}
-
-			size := len(crsH1Proto.H1)
-			h1 := make([]*bls.G1, size)
-
-			for i, v := range crsH1Proto.GetH1() {
-				if len(v.GetPoint()) == 0 {
-					h1[i] = nil
-				} else {
-					h1[i] = new(bls.G1)
-					err := h1[i].SetBytes(v.GetPoint())
-					if err != nil {
-						log.Errorf("error setting crs.H1[%d]: %v", i, err)
+				if pp.Commitments == nil {
+					pp.Commitments = make([]*bls.G1, pp.NumBlocks)
+					for i := 0; i < pp.NumBlocks; i++ {
+						pp.Commitments[i] = new(bls.G1)
+						pp.Commitments[i].SetIdentity()
 					}
 				}
-			}
 
-			sc.muRbePp.Lock()
-			if sc.rbePp == nil {
-				pp := new(rbe.PublicParams)
-				pp.CRS = new(rbe.CRS)
-				pp.CRS.H1 = h1
-				sc.rbePp = pp
-			} else {
-				sc.rbePp.CRS.H1 = h1
-			}
-			sc.muRbePp.Unlock()
-		}
-
-		if keyStr == kconstants.RBE_PP_CRS_H2_KEY {
-			crsH2Proto := &kproto.H2{}
-			err := gproto.Unmarshal([]byte(value), crsH2Proto)
-			if err != nil {
-				log.Errorf("[dev] failed to unmarshal crsH2 from etcd: %v", err)
-				return
-			}
-
-			size := len(crsH2Proto.H2)
-			h2 := make([]*bls.G2, size)
-
-			for i, v := range crsH2Proto.GetH2() {
-				if len(v.GetPoint()) == 0 {
-					h2[i] = nil
+				sc.muRbePp.Lock()
+				if sc.rbePp == nil {
+					sc.rbePp = pp
 				} else {
-					h2[i] = new(bls.G2)
-					err := h2[i].SetBytes(v.GetPoint())
-					if err != nil {
-						log.Errorf("error setting crs.H2[%d]: %v", i, err)
+					sc.rbePp.MaxUsers = pp.MaxUsers
+					sc.rbePp.BlockSize = pp.BlockSize
+					sc.rbePp.NumBlocks = pp.NumBlocks
+					sc.rbePp.G1 = pp.G1
+					sc.rbePp.G2 = pp.G2
+					sc.rbePp.Commitments = pp.Commitments
+				}
+				sc.muRbePp.Unlock()
+
+				log.Infof("[dev] saved public params from etcd")
+			}
+
+			// TODO: get these values from the configmap instead of etcd
+			// TODO: before that ensure you can actually use/read these values
+			// TODO: from config map to initialize the public params at startup
+			if keyStr == kconstants.RBE_PP_CRS_H1_KEY {
+				crsH1Proto := &kproto.H1{}
+				err := gproto.Unmarshal([]byte(value), crsH1Proto)
+				if err != nil {
+					log.Errorf("[dev] failed to unmarshal crsH1 from etcd: %v", err)
+					return
+				}
+
+				size := len(crsH1Proto.H1)
+				h1 := make([]*bls.G1, size)
+
+				for i, v := range crsH1Proto.GetH1() {
+					if len(v.GetPoint()) == 0 {
+						h1[i] = nil
+					} else {
+						h1[i] = new(bls.G1)
+						err := h1[i].SetBytes(v.GetPoint())
+						if err != nil {
+							log.Errorf("error setting crs.H1[%d]: %v", i, err)
+						}
 					}
 				}
+
+				sc.muRbePp.Lock()
+				if sc.rbePp == nil {
+					pp := new(rbe.PublicParams)
+					pp.CRS = new(rbe.CRS)
+					pp.CRS.H1 = h1
+					sc.rbePp = pp
+				} else {
+					sc.rbePp.CRS.H1 = h1
+				}
+				sc.muRbePp.Unlock()
 			}
 
-			sc.muRbePp.Lock()
-			if sc.rbePp == nil {
-				pp := new(rbe.PublicParams)
-				pp.CRS = new(rbe.CRS)
-				pp.CRS.H2 = h2
-				sc.rbePp = pp
-			} else {
-				sc.rbePp.CRS.H2 = h2
-			}
-			sc.muRbePp.Unlock()
-		}
+			if keyStr == kconstants.RBE_PP_CRS_H2_KEY {
+				crsH2Proto := &kproto.H2{}
+				err := gproto.Unmarshal([]byte(value), crsH2Proto)
+				if err != nil {
+					log.Errorf("[dev] failed to unmarshal crsH2 from etcd: %v", err)
+					return
+				}
 
-		// TODO: the initial commitments will always be the same?
-		// only the CRS is randomly generated?
-		if keyStr == kconstants.RBE_PP_COMMITMENTS_KEY {
+				size := len(crsH2Proto.H2)
+				h2 := make([]*bls.G2, size)
+
+				for i, v := range crsH2Proto.GetH2() {
+					if len(v.GetPoint()) == 0 {
+						h2[i] = nil
+					} else {
+						h2[i] = new(bls.G2)
+						err := h2[i].SetBytes(v.GetPoint())
+						if err != nil {
+							log.Errorf("error setting crs.H2[%d]: %v", i, err)
+						}
+					}
+				}
+
+				sc.muRbePp.Lock()
+				if sc.rbePp == nil {
+					pp := new(rbe.PublicParams)
+					pp.CRS = new(rbe.CRS)
+					pp.CRS.H2 = h2
+					sc.rbePp = pp
+				} else {
+					sc.rbePp.CRS.H2 = h2
+				}
+				sc.muRbePp.Unlock()
+			}
+		*/
+
+		if strings.HasPrefix(keyStr, kconstants.RBE_PP_COMMITMENTS_KEY) {
+			// we're using WithSort above, so commitments should arrive after
+			// we've received the initial public params and setup the commitments slice
+
 			err := sc.handleCommitmentsUpdate(keyStr, value, kv.ModRevision)
 			if err != nil {
 				log.Errorf("[dev] failed to handle commitments update: %v", err)
@@ -1477,7 +1507,6 @@ func (sc *SecretManagerClient) handleOpeningsUpdate(keyStr string, value []byte,
 	return nil
 }
 
-// TODO: refactor this: initially commitments is the same for all blocks
 // so I can just listen for new updates to blocks individually afterwards
 // split this method into two: one for initial full commitments
 // one for individual block updates
@@ -1525,27 +1554,6 @@ func (sc *SecretManagerClient) handleCommitmentsUpdate(key string, value []byte,
 		}
 		sc.muRbePp.Unlock()
 
-		// TODO: there's no need to save all commitments anymore now
-		// sc.muRecentCommitments.Lock()
-		// if sc.recentCommitments != nil {
-		// 	// get the last revision's commitments
-		// 	// update the last revision's commitments for this block
-		// 	allRevisions := []int64{}
-		// 	for rev := range sc.recentCommitments {
-		// 		allRevisions = append(allRevisions, rev)
-		// 	}
-		// 	slices.Sort(allRevisions)
-		// 	lastRevision := allRevisions[len(allRevisions)-1]
-
-		// 	lastCommitment := sc.recentCommitments[lastRevision]
-		// 	lastCommitment[blockIndex] = commitment
-		// 	sc.recentCommitments[revision] = lastCommitment
-		// } else {
-		// 	log.Infof("[dev] recentCommitments is nil, cannot update single block commitment")
-		// }
-		// sc.muRecentCommitments.Unlock()
-
-		// TODO: won't update Openings right now
 		go sc.ListWatchOpeningsUpdate(revision)
 
 		return nil
@@ -1553,43 +1561,43 @@ func (sc *SecretManagerClient) handleCommitmentsUpdate(key string, value []byte,
 		log.Infof("[dev] this is a commitment update for all blocks: %s", key)
 	}
 
-	commitmentsProto := &kproto.Commitments{}
-	err := gproto.Unmarshal([]byte(value), commitmentsProto)
-	if err != nil {
-		return fmt.Errorf("[dev] failed to unmarshal commitments from etcd: %v", err)
-	}
-
-	commitments := make([]*bls.G1, len(commitmentsProto.Commitments))
-	for i, v := range commitmentsProto.GetCommitments() {
-		commitments[i] = new(bls.G1)
-		err = commitments[i].SetBytes(v.GetPoint())
-		if err != nil {
-			return fmt.Errorf("error setting commitments[%d]: %v", i, err)
-		}
-	}
-
-	sc.muRbePp.Lock()
-	if sc.rbePp == nil {
-		pp := new(rbe.PublicParams)
-		pp.Commitments = commitments
-		sc.rbePp = pp
-	} else {
-		sc.rbePp.Commitments = commitments
-	}
-	sc.muRbePp.Unlock()
-
-	// TODO: there's no need to save all commitments anymore now
-	// sc.muRecentCommitments.Lock()
-	// if sc.recentCommitments == nil {
-	// 	sc.recentCommitments = make(map[int64][]*bls.G1)
+	// commitmentsProto := &kproto.Commitments{}
+	// err := gproto.Unmarshal([]byte(value), commitmentsProto)
+	// if err != nil {
+	// 	return fmt.Errorf("[dev] failed to unmarshal commitments from etcd: %v", err)
 	// }
-	// sc.recentCommitments[revision] = commitments
-	// sc.muRecentCommitments.Unlock()
 
-	log.Infof("[dev] updated commitments from etcd for key: %s, revision: %d", key, revision)
+	// commitments := make([]*bls.G1, len(commitmentsProto.Commitments))
+	// for i, v := range commitmentsProto.GetCommitments() {
+	// 	commitments[i] = new(bls.G1)
+	// 	err = commitments[i].SetBytes(v.GetPoint())
+	// 	if err != nil {
+	// 		return fmt.Errorf("error setting commitments[%d]: %v", i, err)
+	// 	}
+	// }
 
-	// TODO: won't update Openings right now
-	go sc.ListWatchOpeningsUpdate(revision)
+	// sc.muRbePp.Lock()
+	// if sc.rbePp == nil {
+	// 	pp := new(rbe.PublicParams)
+	// 	pp.Commitments = commitments
+	// 	sc.rbePp = pp
+	// } else {
+	// 	sc.rbePp.Commitments = commitments
+	// }
+	// sc.muRbePp.Unlock()
+
+	// // TODO: there's no need to save all commitments anymore now
+	// // sc.muRecentCommitments.Lock()
+	// // if sc.recentCommitments == nil {
+	// // 	sc.recentCommitments = make(map[int64][]*bls.G1)
+	// // }
+	// // sc.recentCommitments[revision] = commitments
+	// // sc.muRecentCommitments.Unlock()
+
+	// log.Infof("[dev] updated commitments from etcd for key: %s, revision: %d", key, revision)
+
+	// // TODO: won't update Openings right now
+	// go sc.ListWatchOpeningsUpdate(revision)
 
 	return nil
 }

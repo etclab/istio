@@ -106,6 +106,8 @@ func (kcs *KeyCuratorServer) initEtcdWithRetry() {
 			log.Infof("[dev] Successfully connected to etcd after %d attempts", attempts)
 
 			// Restore system params if any exist
+			// NOTE: do not restore system params from etcd because we're
+			// reading it from a file/configmap during startup
 			kcs.restoreSystemParams()
 
 			kcs.listenRegistrationRequests()
@@ -131,7 +133,8 @@ func (kcs *KeyCuratorServer) initEtcdWithRetry() {
 // if there's existing public params in etcd, restore them
 // if not update the public params in etcd with the current ones
 func (kcs *KeyCuratorServer) restoreSystemParams() {
-	ppRes, err := kcs.EtcdClient.Get(context.Background(), kconstants.RBE_PP_KEY, clientv3.WithPrefix())
+	ppRes, err := kcs.EtcdClient.Get(context.Background(), kconstants.RBE_PP_COMMITMENTS_KEY, clientv3.WithPrefix(),
+		clientv3.WithSort(clientv3.SortByModRevision, clientv3.SortAscend))
 	if err != nil {
 		log.Errorf("[dev] failed to fetch public params from etcd: %v", err)
 		return
@@ -149,105 +152,129 @@ func (kcs *KeyCuratorServer) restoreSystemParams() {
 
 			log.Infof("[dev] received key: %s, len(value): %d", key, len(value))
 
-			// check if key is for public params
-			if keyStr == kconstants.RBE_PP_KEY {
-				ppProto := &proto.PublicParams{}
-				err := gproto.Unmarshal([]byte(value), ppProto)
-				if err != nil {
-					log.Errorf("[dev] failed to unmarshal public params from etcd: %v", err)
-					return
+			/*
+				// check if key is for public params
+				if keyStr == kconstants.RBE_PP_KEY {
+					ppProto := &proto.PublicParams{}
+					err := gproto.Unmarshal([]byte(value), ppProto)
+					if err != nil {
+						log.Errorf("[dev] failed to unmarshal public params from etcd: %v", err)
+						return
+					}
+
+					ppCopy := new(rbe.PublicParams)
+					ppCopy.FromProto(ppProto)
+
+					pp.MaxUsers = ppCopy.MaxUsers
+					pp.BlockSize = ppCopy.BlockSize
+					pp.NumBlocks = ppCopy.NumBlocks
+					pp.G1 = ppCopy.G1
+					pp.G2 = ppCopy.G2
+
+					log.Infof("[dev] saved public params from etcd")
 				}
 
-				ppCopy := new(rbe.PublicParams)
-				ppCopy.FromProto(ppProto)
+				if keyStr == kconstants.RBE_PP_CRS_H1_KEY {
+					crsH1Proto := &pb.H1{}
+					err := gproto.Unmarshal([]byte(value), crsH1Proto)
+					if err != nil {
+						log.Errorf("[dev] failed to unmarshal crsH1 from etcd: %v", err)
+						return
+					}
 
-				pp.MaxUsers = ppCopy.MaxUsers
-				pp.BlockSize = ppCopy.BlockSize
-				pp.NumBlocks = ppCopy.NumBlocks
-				pp.G1 = ppCopy.G1
-				pp.G2 = ppCopy.G2
+					size := len(crsH1Proto.H1)
+					h1 := make([]*bls.G1, size)
 
-				log.Infof("[dev] saved public params from etcd")
-			}
-
-			if keyStr == kconstants.RBE_PP_CRS_H1_KEY {
-				crsH1Proto := &pb.H1{}
-				err := gproto.Unmarshal([]byte(value), crsH1Proto)
-				if err != nil {
-					log.Errorf("[dev] failed to unmarshal crsH1 from etcd: %v", err)
-					return
-				}
-
-				size := len(crsH1Proto.H1)
-				h1 := make([]*bls.G1, size)
-
-				for i, v := range crsH1Proto.GetH1() {
-					if len(v.GetPoint()) == 0 {
-						h1[i] = nil
-					} else {
-						h1[i] = new(bls.G1)
-						err := h1[i].SetBytes(v.GetPoint())
-						if err != nil {
-							log.Errorf("error setting crs.H1[%d]: %v", i, err)
+					for i, v := range crsH1Proto.GetH1() {
+						if len(v.GetPoint()) == 0 {
+							h1[i] = nil
+						} else {
+							h1[i] = new(bls.G1)
+							err := h1[i].SetBytes(v.GetPoint())
+							if err != nil {
+								log.Errorf("error setting crs.H1[%d]: %v", i, err)
+							}
 						}
 					}
+
+					if pp.CRS == nil {
+						pp.CRS = new(rbe.CRS)
+					}
+					pp.CRS.H1 = h1
 				}
 
-				if pp.CRS == nil {
-					pp.CRS = new(rbe.CRS)
-				}
-				pp.CRS.H1 = h1
-			}
+				if keyStr == kconstants.RBE_PP_CRS_H2_KEY {
+					crsH2Proto := &pb.H2{}
+					err := gproto.Unmarshal([]byte(value), crsH2Proto)
+					if err != nil {
+						log.Errorf("[dev] failed to unmarshal crsH2 from etcd: %v", err)
+						return
+					}
 
-			if keyStr == kconstants.RBE_PP_CRS_H2_KEY {
-				crsH2Proto := &pb.H2{}
-				err := gproto.Unmarshal([]byte(value), crsH2Proto)
-				if err != nil {
-					log.Errorf("[dev] failed to unmarshal crsH2 from etcd: %v", err)
-					return
-				}
+					size := len(crsH2Proto.H2)
+					h2 := make([]*bls.G2, size)
 
-				size := len(crsH2Proto.H2)
-				h2 := make([]*bls.G2, size)
-
-				for i, v := range crsH2Proto.GetH2() {
-					if len(v.GetPoint()) == 0 {
-						h2[i] = nil
-					} else {
-						h2[i] = new(bls.G2)
-						err := h2[i].SetBytes(v.GetPoint())
-						if err != nil {
-							log.Errorf("error setting crs.H2[%d]: %v", i, err)
+					for i, v := range crsH2Proto.GetH2() {
+						if len(v.GetPoint()) == 0 {
+							h2[i] = nil
+						} else {
+							h2[i] = new(bls.G2)
+							err := h2[i].SetBytes(v.GetPoint())
+							if err != nil {
+								log.Errorf("error setting crs.H2[%d]: %v", i, err)
+							}
 						}
 					}
-				}
 
-				if pp.CRS == nil {
-					pp.CRS = new(rbe.CRS)
+					if pp.CRS == nil {
+						pp.CRS = new(rbe.CRS)
+					}
+					pp.CRS.H2 = h2
 				}
-				pp.CRS.H2 = h2
-			}
+			*/
 
+			// Do we not need to handle commitments here anymore?
+			// as we discover new users from etcd or API, the commitments get
+			// updated accordingly --> unsure if this is true in every case
 			if keyStr == kconstants.RBE_PP_COMMITMENTS_KEY {
-				commitmentsProto := &pb.Commitments{}
-				err := gproto.Unmarshal([]byte(value), commitmentsProto)
+				// we don't handle commitments as a whole anymore
+				// not really necessary if we're not storing them at etcd anyway
+				continue
+			}
+
+			if strings.HasPrefix(keyStr, kconstants.RBE_PP_COMMITMENTS_KEY) {
+				log.Infof("[dev] this is a commitment update for a single block: %s, with size: %d", key, len(value))
+
+				// rbe-system/pp/commitments/27
+				parts := strings.Split(keyStr, "/")
+
+				blockIndexStr := parts[3]
+				blockIndex, err := strconv.Atoi(blockIndexStr)
+				if err != nil {
+					log.Errorf("[dev] invalid block index in commitments key: %s", key)
+				}
+
+				commitmentsProto := &proto.G1{}
+				err = gproto.Unmarshal([]byte(value), commitmentsProto)
 				if err != nil {
 					log.Errorf("[dev] failed to unmarshal commitments from etcd: %v", err)
-					return
 				}
 
-				commitments := make([]*bls.G1, len(commitmentsProto.Commitments))
-				for i, v := range commitmentsProto.GetCommitments() {
-					commitments[i] = new(bls.G1)
-					err = commitments[i].SetBytes(v.GetPoint())
-					if err != nil {
-						log.Errorf("error setting commitments[%d]: %v", i, err)
-					}
+				commitment := new(bls.G1)
+				err = commitment.SetBytes(commitmentsProto.GetPoint())
+				if err != nil {
+					log.Errorf("error setting commitment for block %d: %v", blockIndex, err)
 				}
 
-				pp.Commitments = commitments
+				// ordering is preserved here so we can directly set at the index
+				if pp.Commitments == nil {
+					pp.Commitments = kcs.pp.Commitments
+				}
+				pp.Commitments[blockIndex] = commitment
 			}
 		}
+		// reuse the existing commitments
+		pp.Commitments = kcs.pp.Commitments
 
 		kcs.pp = pp
 		kcs.kc = rbe.NewKeyCurator(kcs.pp) // reinitialize KeyCurator with restored public params
@@ -263,7 +290,8 @@ func (kcs *KeyCuratorServer) restoreSystemParams() {
 }
 
 func (kcs *KeyCuratorServer) fetchExistingUsers() int64 {
-	getRes, err := kcs.EtcdClient.Get(context.Background(), kconstants.RBE_USER_PREFIX, clientv3.WithPrefix())
+	getRes, err := kcs.EtcdClient.Get(context.Background(), kconstants.RBE_USER_PREFIX, clientv3.WithPrefix(),
+		clientv3.WithSort(clientv3.SortByModRevision, clientv3.SortAscend))
 	if err != nil {
 		log.Errorf("[dev] failed to fetch existing users from etcd: %v", err)
 		return -1
@@ -440,7 +468,13 @@ func (kcs *KeyCuratorServer) StoreAtEtcd(id int, req *pb.RegisterRequest) {
 }
 
 func NewKeyCuratorServer(maxUsers int, podName string) *KeyCuratorServer {
-	pp := rbe.NewPublicParams(maxUsers)
+	// check if we have existing public params in /var/run/rbe-pp file
+	// and we can restore them
+	pp, err := keycurator.TryParseRbePpFromFile()
+	if err != nil {
+		log.Infof("[dev] could not parse RBE public params from file: %v, generating new params", err)
+		pp = rbe.NewPublicParams(maxUsers)
+	}
 	kc := rbe.NewKeyCurator(pp)
 	history := make([]*RegistrationEvent, 0)
 	registeredIds := make(map[int]bool)
