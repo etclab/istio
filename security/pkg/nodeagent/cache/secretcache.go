@@ -46,7 +46,6 @@ import (
 	"istio.io/istio/pkg/backoff"
 	"istio.io/istio/pkg/file"
 	"istio.io/istio/pkg/log"
-	istiolog "istio.io/istio/pkg/log"
 	"istio.io/istio/pkg/queue"
 	"istio.io/istio/pkg/security"
 	"istio.io/istio/pkg/spiffe"
@@ -62,7 +61,7 @@ import (
 )
 
 var (
-	cacheLog = istiolog.RegisterScope("cache", "cache debugging")
+	cacheLog = log.RegisterScope("cache", "cache debugging")
 	// The total timeout for any credential retrieval process, default value of 10s is used.
 	totalTimeout = time.Second * 10
 )
@@ -132,6 +131,11 @@ type SecretManagerClient struct {
 
 	rbePp   *rbe.PublicParams
 	muRbePp sync.RWMutex
+
+	// tracks the history of commitments for blocks
+	// this is done because we need past commitments to verify proofs later
+	commitmentsHistory   map[int][]*bls.G1
+	muCommitmentsHistory sync.RWMutex
 
 	recentCommitments   map[int64][]*bls.G1
 	muRecentCommitments sync.RWMutex
@@ -1204,6 +1208,9 @@ func (sc *SecretManagerClient) verifyRbeUser(keyStr string, userId string) (bool
 	sc.muUserRegAttestations.RLock()
 	defer sc.muUserRegAttestations.RUnlock()
 
+	sc.muCommitmentsHistory.RLock()
+	defer sc.muCommitmentsHistory.RUnlock()
+
 	proof := sc.userRegProofs[keyStr]
 	user := sc.regUsers[keyStr]
 	pubKey := user.PublicKey
@@ -1215,7 +1222,41 @@ func (sc *SecretManagerClient) verifyRbeUser(keyStr string, userId string) (bool
 		if isVerified {
 			log.Infof("[dev] membership verified successfully for %s", keyStr)
 		} else {
-			return false, fmt.Errorf("[dev] membership verification failed for %s", keyStr)
+			// if verification fails, we go test with old commitments
+			log.Infof("[dev] membership verification failed for user %d with current commitments, trying with older commitments", id)
+
+			block := sc.rbePp.IdToBlock(id)
+			currentCommitment := sc.rbePp.Commitments[block]
+
+			isVerifiedWithOldCommitments := false
+			blockCommitments, exists := sc.commitmentsHistory[block]
+			if exists {
+				N := len(blockCommitments)
+				for i := N - 1; i >= 0; i-- {
+					if blockCommitments[i] == nil {
+						continue
+					}
+					sc.rbePp.Commitments[block] = blockCommitments[i]
+					isVerifiedWithOldCommitments = rbe.VerifyMembership(sc.rbePp, id, pubKey, proof)
+					if isVerifiedWithOldCommitments {
+						log.Infof("[dev] membership verified successfully for %s with older commitments at index %d", keyStr, i)
+						break
+					} else {
+						log.Infof("[dev] membership verification failed for %s with older commitments at index %d", keyStr, i)
+					}
+				}
+			} else {
+				// we don't yet have older commitments for this block, so we simply fail
+				log.Errorf("[dev] no older commitments found for block %d", block)
+			}
+			// restore current commitment for this block
+			sc.rbePp.Commitments[block] = currentCommitment
+
+			if isVerifiedWithOldCommitments {
+				log.Infof("[dev] membership verified successfully for %s with older commitments", keyStr)
+			} else {
+				return false, fmt.Errorf("[dev] membership verification failed for %s", keyStr)
+			}
 		}
 	} else {
 		log.Infof("[dev] RBE proof verification for %s is disabled", keyStr)
@@ -1290,21 +1331,25 @@ func (sc *SecretManagerClient) VerifyRegisteredUser() {
 		if err != nil {
 			log.Errorf("[dev] error verifying RBE user %s: %v", userId, err)
 			sc.unverifiedUsersList = append(sc.unverifiedUsersList, keyStr)
-			continue
 		}
 		if verified {
 			log.Infof("[dev] RBE user %s verified successfully", userId)
 			go sc.markUserAsVerified(userId)
+			go sc.retryOneUnverifiedUser()
+		} else {
+			log.Infof("[dev] RBE user %s verification failed", userId)
 		}
+	}
+}
 
-		go func() {
-			if len(sc.unverifiedUsersList) > 0 {
-				first, rest := sc.unverifiedUsersList[0], sc.unverifiedUsersList[1:]
-				sc.unverifiedUsersList = rest
-				log.Infof("[dev] re-queuing unverified user key: %s for verification", first)
-				sc.userVerificationChan <- first
-			}
-		}()
+func (sc *SecretManagerClient) retryOneUnverifiedUser() {
+	if len(sc.unverifiedUsersList) > 0 {
+		first, rest := sc.unverifiedUsersList[0], sc.unverifiedUsersList[1:]
+		sc.unverifiedUsersList = rest
+		log.Infof("[dev] re-queuing unverified user key: %s for verification", first)
+		sc.userVerificationChan <- first
+	} else {
+		log.Infof("[dev] all users verified now!")
 	}
 }
 
@@ -1405,6 +1450,9 @@ func (sc *SecretManagerClient) handleRegisteredUserUpdate(keyStr string, value [
 		log.Infof("[dev] saved registered user for key: %s", keyStr)
 
 		go sc.retryAllOpeningsForUser(strconv.FormatInt(req.Id, 10))
+
+		// enqueue the user for verifying RBE proof and attestation
+		sc.userVerificationChan <- keyStr
 	} else {
 		return fmt.Errorf("[dev] error unmarshalling request for user %s: %v", keyStr, err)
 	}
@@ -1749,6 +1797,10 @@ func (sc *SecretManagerClient) handleCommitmentsUpdate(key string, value []byte,
 		}
 
 		sc.muRbePp.Lock()
+		sc.muCommitmentsHistory.Lock()
+		if sc.commitmentsHistory == nil {
+			sc.commitmentsHistory = make(map[int][]*bls.G1)
+		}
 		if sc.rbePp != nil {
 			// check if revision is newer than last update for this block
 			sc.muLastRevisionForBlock.RLock()
@@ -1756,6 +1808,14 @@ func (sc *SecretManagerClient) handleCommitmentsUpdate(key string, value []byte,
 			if exists && revision <= lastRev {
 				log.Infof("[dev] skipping outdated commitment update for block %d: revision %d <= lastRev %d", blockIndex, revision, lastRev)
 			} else {
+				// copy on write: save old commitment to history
+				oldCommitment := sc.rbePp.Commitments[blockIndex]
+				if sc.commitmentsHistory[blockIndex] == nil {
+					sc.commitmentsHistory[blockIndex] = []*bls.G1{}
+				}
+				sc.commitmentsHistory[blockIndex] = append(sc.commitmentsHistory[blockIndex], oldCommitment)
+
+				// update the commitment for this block
 				sc.rbePp.Commitments[blockIndex] = commitment
 				log.Infof("[dev] updated commitment for block %d at revision %d", blockIndex, revision)
 				sc.lastRevisionForBlock[blockIndex] = revision
@@ -1766,6 +1826,7 @@ func (sc *SecretManagerClient) handleCommitmentsUpdate(key string, value []byte,
 			// we have the rbePp initialized so we can ignore this error
 			return fmt.Errorf("[dev] rbePp is nil, cannot update single block commitment")
 		}
+		sc.muCommitmentsHistory.Unlock()
 		sc.muRbePp.Unlock()
 
 		// TODO: there's no need to save all commitments anymore now
@@ -1790,6 +1851,7 @@ func (sc *SecretManagerClient) handleCommitmentsUpdate(key string, value []byte,
 
 		// TODO: won't update Openings right now
 		go sc.ListWatchOpeningsUpdate(revision)
+		go sc.retryOneUnverifiedUser()
 
 		return nil
 	} else {
@@ -1833,6 +1895,7 @@ func (sc *SecretManagerClient) handleCommitmentsUpdate(key string, value []byte,
 
 	// TODO: won't update Openings right now
 	go sc.ListWatchOpeningsUpdate(revision)
+	go sc.retryOneUnverifiedUser()
 
 	return nil
 }
@@ -2033,6 +2096,11 @@ func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(rbeId *security.RbeId,
 		commitments, opening, proof, userIdsBeforeMe, err := sc.kcClient.RegisterUser(user, rbeId)
 		if err != nil {
 			log.Errorf("[dev] err on RegisterUser(): %v", err)
+			return nil, err
+		}
+
+		if len(commitments) == 0 {
+			err := fmt.Errorf("received empty commitments from key curator")
 			return nil, err
 		}
 

@@ -613,6 +613,7 @@ func (kcs *KeyCuratorServer) FetchAllUpdates(_ context.Context, in *emptypb.Empt
 	}, nil
 }
 
+// unused
 func (kcs *KeyCuratorServer) FetchUpdate(_ context.Context, in *pb.UpdateRequest) (*pb.UserOpeningResponse, error) {
 	id := int(in.GetId())
 
@@ -677,6 +678,32 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 		}
 	}
 
+	var usersBeforeMe []int64
+	for registeredId := range kcs.registeredIds {
+		usersBeforeMe = append(usersBeforeMe, int64(registeredId))
+	}
+
+	usersBeforeMeStringArr := make([]string, len(usersBeforeMe))
+	for i, v := range usersBeforeMe {
+		usersBeforeMeStringArr[i] = fmt.Sprintf("%d", v)
+	}
+
+	usersBeforeMeJoined := strings.Join(usersBeforeMeStringArr, "|")
+
+	eventString := fmt.Sprintf("REGISTER,%d,%s,%d", in.GetId(),
+		usersBeforeMeJoined, registerTime)
+	// the wait time a user experienced before registering can be high if many users
+	// are registering at the same time
+	// usersBeforeMeJoined, time.Now().UnixMicro())
+	go func() {
+		err := kcs.logWriter.Append(eventString)
+		if err != nil {
+			log.Errorf("[dev] failed to append REGISTER event for user %d: %v", in.GetId(), err)
+		}
+	}()
+
+	kcs.kc.RegisterUser(id, publicKey, xi)
+
 	//
 	isRbeProofEnabled := kcUtil.IsRbeProofEnabled()
 	isAttestationEnabled := kcUtil.IsAttestationEnabled()
@@ -735,31 +762,7 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 		RequestBytes:     regMsg,
 	}
 	//
-	var usersBeforeMe []int64
-	for registeredId := range kcs.registeredIds {
-		usersBeforeMe = append(usersBeforeMe, int64(registeredId))
-	}
 
-	usersBeforeMeStringArr := make([]string, len(usersBeforeMe))
-	for i, v := range usersBeforeMe {
-		usersBeforeMeStringArr[i] = fmt.Sprintf("%d", v)
-	}
-
-	usersBeforeMeJoined := strings.Join(usersBeforeMeStringArr, "|")
-
-	eventString := fmt.Sprintf("REGISTER,%d,%s,%d", in.GetId(),
-		usersBeforeMeJoined, registerTime)
-	// the wait time a user experienced before registering can be high if many users
-	// are registering at the same time
-	// usersBeforeMeJoined, time.Now().UnixMicro())
-	go func() {
-		err := kcs.logWriter.Append(eventString)
-		if err != nil {
-			log.Errorf("[dev] failed to append REGISTER event for user %d: %v", in.GetId(), err)
-		}
-	}()
-
-	kcs.kc.RegisterUser(id, publicKey, xi)
 	kcs.addToHistory(in.Token, in.Ip, in.Port, int(in.Id), publicKey, xi, in,
 		source, counterAttestation)
 
