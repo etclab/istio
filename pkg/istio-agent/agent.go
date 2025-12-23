@@ -149,7 +149,11 @@ type Agent struct {
 	// Signals true completion (e.g. with delayed graceful termination of Envoy)
 	wg sync.WaitGroup
 
+	// readyChan is used to signal when I am ready
 	readyChan chan bool
+
+	// areOthersReadyChan is used to signal when other services are ready
+	areOthersReadyChan chan bool
 }
 
 // AgentOptions contains additional config for the agent, not included in ProxyConfig.
@@ -246,12 +250,13 @@ type AgentOptions struct {
 // health checking for VMs and DNS proxying).
 func NewAgent(proxyConfig *mesh.ProxyConfig, agentOpts *AgentOptions, sopts *security.Options, eopts envoy.ProxyConfig) *Agent {
 	return &Agent{
-		proxyConfig: proxyConfig,
-		cfg:         agentOpts,
-		secOpts:     sopts,
-		envoyOpts:   eopts,
-		fileWatcher: filewatcher.NewWatcher(),
-		readyChan:   make(chan bool),
+		proxyConfig:        proxyConfig,
+		cfg:                agentOpts,
+		secOpts:            sopts,
+		envoyOpts:          eopts,
+		fileWatcher:        filewatcher.NewWatcher(),
+		readyChan:          make(chan bool),
+		areOthersReadyChan: make(chan bool),
 	}
 }
 
@@ -579,11 +584,13 @@ func (a *Agent) initSdsServer() error {
 		}()
 	} else {
 		a.readyChan <- true
+		a.areOthersReadyChan <- true
 	}
 
 	// wait until all the services (within your block) before you have processed
 	// your update
 	<-a.readyChan
+	<-a.areOthersReadyChan
 
 	return nil
 }
@@ -612,6 +619,7 @@ func (a *Agent) getWorkloadRbeCerts(st *cache.SecretManagerClient,
 	if err != nil {
 		return nil, err
 	}
+	go a.secretCache.GetWatchLog(rbeId.ToNumber())
 	return nil, nil
 }
 
@@ -951,6 +959,7 @@ func (a *Agent) newSecretManager() (*cache.SecretManagerClient, error) {
 	sMClient, err := cache.NewSecretManagerClient(caClient, a.secOpts)
 	sMClient.SetKCClient(kcClient)
 	sMClient.SetReadyChannel(a.readyChan)
+	sMClient.SetAreOthersReadyChannel(a.areOthersReadyChan)
 	sMClient.SetupEtcdClient()
 
 	return sMClient, err
