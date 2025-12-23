@@ -13,5 +13,6 @@ const RBE_PP_G2_KEY = "rbe-system/pp/g2"
 const RBE_PP_CRS_H1_KEY = "rbe-system/pp/crs-h1"
 const RBE_PP_CRS_H2_KEY = "rbe-system/pp/crs-h2"
 const RBE_PP_COMMITMENTS_KEY = "rbe-system/pp/commitments"
+const RBE_LOG_KEY = "rbe-log"
 
 const RBE_OPENINGS_KEY = "rbe-system/openings"

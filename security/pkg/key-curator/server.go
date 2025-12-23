@@ -6,6 +6,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -79,6 +80,8 @@ type KeyCuratorServer struct {
 	Authenticators []security.Authenticator
 
 	logWriter *kceval.MLogWriter
+
+	amIReady atomic.Bool
 }
 
 func (kcs *KeyCuratorServer) ListWatchRBEUsers() {
@@ -93,7 +96,7 @@ func (kcs *KeyCuratorServer) ListWatchRBEUsers() {
 	go kcs.watchEtcdKeys(currentRevision)
 }
 
-func (kcs *KeyCuratorServer) initEtcdWithRetry() {
+func (kcs *KeyCuratorServer) initEtcdWithRetry(wg *sync.WaitGroup) {
 	backoff := 5 * time.Second
 	maxBackoff := 2 * time.Minute
 	maxAttempts := 20
@@ -114,6 +117,8 @@ func (kcs *KeyCuratorServer) initEtcdWithRetry() {
 
 			// get existing RBE users and then start watching for new users
 			kcs.ListWatchRBEUsers()
+
+			wg.Done()
 			return
 		}
 
@@ -493,14 +498,25 @@ func NewKeyCuratorServer(maxUsers int, podName string) *KeyCuratorServer {
 		logWriter: kceval.NewMLogWriter(""),
 	}
 
-	go kcServer.TryAcquireLease(kcServer.leaseId)
+	// channel to receive signals when lease is acquired/ready and when etcd is
+	// connected and initial system params have been received
+	var wg sync.WaitGroup
 
-	go kcServer.initEtcdWithRetry()
+	wg.Add(1)
+	go kcServer.TryAcquireLease(kcServer.leaseId, &wg)
+
+	wg.Add(1)
+	go kcServer.initEtcdWithRetry(&wg)
+
+	wg.Wait()
+
+	kcServer.amIReady.Store(true)
+	log.Infof("[dev] KeyCuratorServer is ready")
 
 	return kcServer
 }
 
-func (kcs *KeyCuratorServer) TryAcquireLease(id string) {
+func (kcs *KeyCuratorServer) TryAcquireLease(id string, wg *sync.WaitGroup) {
 	clientset, err := keycurator.GetKubeClient()
 	if err != nil {
 		log.Errorf("[dev] failed to get kube client: %v", err)
@@ -534,6 +550,7 @@ func (kcs *KeyCuratorServer) TryAcquireLease(id string) {
 			OnStartedLeading: func(ctx context.Context) {
 				log.Infof("[dev] acquired lease: %s", id)
 				kcs.isLeader.Store(true)
+				// wg.Done()
 			},
 			OnStoppedLeading: func() {
 				log.Infof("[dev] lost lease: %s", id)
@@ -542,6 +559,10 @@ func (kcs *KeyCuratorServer) TryAcquireLease(id string) {
 			OnNewLeader: func(leaderIdentity string) {
 				log.Infof("[dev] new leader elected with id: %s", leaderIdentity)
 				kcs.leaderPodId.Store(leaderIdentity)
+
+				if kcs.amIReady.Load() == false {
+					wg.Done()
+				}
 			},
 		},
 	})

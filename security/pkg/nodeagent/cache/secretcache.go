@@ -156,6 +156,9 @@ type SecretManagerClient struct {
 	regUsers   map[string]*RegisteredUser
 	muRegUsers sync.RWMutex
 
+	usersFromLog   []int64
+	muUsersFromLog sync.RWMutex
+
 	etcdClient *clientv3.Client
 
 	// configOptions includes all configurable params for the cache.
@@ -206,8 +209,11 @@ type SecretManagerClient struct {
 	validUsersMap   map[int64]bool
 	muValidUsersMap sync.RWMutex
 
-	readyChan chan bool
-	amIReady  atomic.Value
+	readyChan          chan bool
+	areOthersReadyChan chan bool
+
+	amIReady       atomic.Value
+	areOthersReady atomic.Value
 }
 
 type secretCache struct {
@@ -329,6 +335,10 @@ func (sc *SecretManagerClient) SetKCClient(skc security.KeyCuratorClient) {
 
 func (sc *SecretManagerClient) SetReadyChannel(readyChan chan bool) {
 	sc.readyChan = readyChan
+}
+
+func (sc *SecretManagerClient) SetAreOthersReadyChannel(areOthersReadyChan chan bool) {
+	sc.areOthersReadyChan = areOthersReadyChan
 }
 
 func (sc *SecretManagerClient) SetupEtcdClient() {
@@ -525,6 +535,60 @@ func (sc *SecretManagerClient) GetWatchRegisteredUsers() {
 					if err != nil {
 						log.Errorf("[dev] failed to handle registered user update: %v", err)
 					}
+				}
+			}
+		}
+	}()
+}
+
+// after receiving an opening for user and validating it successfully
+// a service saves a key: rbe-log/<received-user-id>/verified-by/<my-user-id>
+// this tells everyone that the opening for received-user-id has been verified by my-user-id
+func (sc *SecretManagerClient) GetWatchLog(myUserId int64) {
+	key := fmt.Sprintf("%s/%d", kconstants.RBE_LOG_KEY, myUserId)
+	logRes, err := sc.etcdClient.Get(context.Background(), key, clientv3.WithPrefix())
+	if err != nil {
+		log.Errorf("[dev] failed to fetch existing logs from etcd: %v", err)
+	}
+
+	log.Infof("[dev] fetched %d existing logs from etcd with revision: %d", len(logRes.Kvs), logRes.Header.Revision)
+	for _, kv := range logRes.Kvs {
+		keyStr := string(kv.Key)
+
+		err := sc.handleRbeLogUpdate(keyStr)
+		if err != nil {
+			log.Errorf("[dev] failed to handle rbe-log update: %v", err)
+		}
+	}
+
+	currentRevision := logRes.Header.Revision
+	log.Infof("current revision is %d", currentRevision)
+
+	// watch for new logs
+	go func() {
+		uch := sc.etcdClient.Watch(context.Background(), key, clientv3.WithPrefix(), clientv3.WithRev(currentRevision+1))
+		for newUserResp := range uch {
+			if newUserResp.Canceled {
+				log.Warnf("[dev] etcd watch canceled: %v", newUserResp.Err())
+				return
+			}
+
+			for _, ev := range newUserResp.Events {
+				log.Infof("[dev] type: %s, key: %q\n", ev.Type, ev.Kv.Key)
+
+				if ev.Type == clientv3.EventTypePut {
+					key := string(ev.Kv.Key)
+
+					err := sc.handleRbeLogUpdate(key)
+					if err != nil {
+						log.Errorf("[dev] failed to handle rbe-log update: %v", err)
+					}
+				}
+
+				// check if areOthersReady so that you can break out of this loop
+				if sc.areOthersReady.Load() != nil && sc.areOthersReady.Load().(bool) {
+					log.Infof("[dev] Others are already ready, skipping check")
+					return
 				}
 			}
 		}
@@ -841,6 +905,43 @@ func (sc *SecretManagerClient) updatePodValidationWithOpeningUtil(userId string,
 	go sc.retryOneFromErroredWaiting()
 }
 
+// other services also verify my update and let me know once they are ready
+func (sc *SecretManagerClient) AreOthersReady(myUserId int) {
+	if sc.areOthersReady.Load() != nil && sc.areOthersReady.Load().(bool) {
+		log.Infof("[dev] Others are already ready, skipping check")
+		return
+	}
+
+	sc.muUserIdsBeforeMe.RLock()
+	defer sc.muUserIdsBeforeMe.RUnlock()
+
+	sc.muUsersFromLog.RLock()
+	defer sc.muUsersFromLog.RUnlock()
+
+	log.Infof("[dev] checking if others are ready")
+
+	ready := true
+	loggedUsersMap := map[int64]bool{}
+	for _, userId := range sc.usersFromLog {
+		loggedUsersMap[userId] = true
+	}
+
+	for _, userId := range sc.userIdsBeforeMe {
+		_, exists := loggedUsersMap[userId]
+		if !exists {
+			ready = false
+			log.Infof("[dev] Others aren't ready for me yet, user id %d is not in the log", userId)
+			break
+		}
+	}
+
+	if ready {
+		log.Infof("[dev] Other services are ready for me now!")
+		sc.areOthersReady.Store(true)
+		sc.areOthersReadyChan <- true
+	}
+}
+
 // user is ready once it verifies openings from all existing old users
 func (sc *SecretManagerClient) AmIReady(myUserId int) {
 	if sc.amIReady.Load() != nil && sc.amIReady.Load().(bool) {
@@ -935,6 +1036,16 @@ func (sc *SecretManagerClient) ackOpeningProcessed(result bool, otherUserId int6
 		log.Errorf("[dev] failed to send ACK_OPENING in key curator: %v", err)
 	} else {
 		log.Infof("[dev] send ACK_OPENING key curator")
+	}
+
+	// also store ack for processed opening in etcd
+	key := fmt.Sprintf("%s/%d/verified-by/%d", kconstants.RBE_LOG_KEY, otherUserId, myUserId)
+	_, err = etcdutil.PutKVToEtcd(sc.etcdClient, key, []byte("true"))
+	if err != nil {
+		log.Errorf("[dev] failed to store etcd log: %v", err)
+	} else {
+		log.Infof("[dev] stored to etcd log: otherUserId(%d) was verified by userId(%d)",
+			otherUserId, myUserId)
 	}
 }
 
@@ -1121,6 +1232,44 @@ func (sc *SecretManagerClient) checkPodValidity(rbeId *security.RbeId,
 	}
 
 	return nonceHash.IsEqual(decryptedNonce)
+}
+
+// value is irrelevant, we're only interested if the key was created
+func (sc *SecretManagerClient) handleRbeLogUpdate(keyStr string) error {
+
+	// keyStr has format: rbe-log/<my-user-id>/verified-by/<other-user-id>
+	parts := strings.Split(keyStr, "/")
+	if len(parts) != 4 {
+		return fmt.Errorf("[dev] invalid key format for rbe-log key: %s", keyStr)
+	}
+
+	myUserIdStr := parts[1]
+	myUserId, err := strconv.ParseInt(myUserIdStr, 10, 64)
+	if err != nil {
+		return fmt.Errorf("[dev] invalid my user id in rbe-log key: %s", myUserIdStr)
+	}
+
+	otherUserIdStr := parts[3]
+	otherUserId, err := strconv.ParseInt(otherUserIdStr, 10, 64)
+	if err != nil {
+		return fmt.Errorf("[dev] invalid other user id in rbe-log key: %s", otherUserIdStr)
+	}
+
+	log.Infof("[dev] received rbe-log update: my-user-id(%s) was verified by other-user-id(%d)",
+		parts[1], otherUserId)
+
+	sc.muUsersFromLog.Lock()
+	if sc.usersFromLog == nil {
+		sc.usersFromLog = make([]int64, 0)
+	}
+	sc.usersFromLog = append(sc.usersFromLog, otherUserId)
+	sc.muUsersFromLog.Unlock()
+
+	defer func() {
+		go sc.AreOthersReady(int(myUserId))
+	}()
+
+	return nil
 }
 
 func (sc *SecretManagerClient) handleRegisteredUserUpdate(keyStr string, value []byte) error {
@@ -1799,6 +1948,9 @@ func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(rbeId *security.RbeId,
 			log.Errorf("[dev] err on RegisterUser(): %v", err)
 			return nil, err
 		}
+
+		log.Infof("[dev] got commitments (len=%d) and opening (len=%d) from key curator for user id %d",
+			len(commitments), len(opening), id)
 
 		sc.muUserIdsBeforeMe.Lock()
 		sc.userIdsBeforeMe = userIdsBeforeMe
