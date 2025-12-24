@@ -1951,6 +1951,7 @@ func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(rbeId *security.RbeId,
 
 		log.Infof("[dev] got commitments (len=%d) and opening (len=%d) from key curator for user id %d",
 			len(commitments), len(opening), id)
+		log.Infof("[dev] other users before me: %+v", userIdsBeforeMe)
 
 		sc.muUserIdsBeforeMe.Lock()
 		sc.userIdsBeforeMe = userIdsBeforeMe

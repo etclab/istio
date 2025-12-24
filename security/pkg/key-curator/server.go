@@ -155,7 +155,7 @@ func (kcs *KeyCuratorServer) restoreSystemParams() {
 			key := kv.Key
 			keyStr := string(key)
 
-			log.Infof("[dev] received key: %s, len(value): %d", key, len(value))
+			log.Infof("[dev] received key: %s, len(value): %d, modRevision: %d", key, len(value), kv.ModRevision)
 
 			/*
 				// check if key is for public params
@@ -273,24 +273,20 @@ func (kcs *KeyCuratorServer) restoreSystemParams() {
 
 				// ordering is preserved here so we can directly set at the index
 				if pp.Commitments == nil {
+					// reuse the existing commitments
 					pp.Commitments = kcs.pp.Commitments
 				}
 				pp.Commitments[blockIndex] = commitment
 			}
 		}
-		// reuse the existing commitments
-		pp.Commitments = kcs.pp.Commitments
+		kcs.pp.Commitments = pp.Commitments
 
-		kcs.pp = pp
 		kcs.kc = rbe.NewKeyCurator(kcs.pp) // reinitialize KeyCurator with restored public params
 		log.Infof("[dev] restored public params from etcd")
 	} else {
-		log.Infof("[dev] no public params found in etcd, storing current public params")
-		_, err := etcdutil.SavePublicParamsToEtcd(kcs.EtcdClient, kcs.pp, false)
-		if err != nil {
-			log.Errorf("[dev] failed to store public params in etcd: %v", err)
-			return
-		}
+		// we don't need to send commitments here as there's a separate mechanism
+		// that sends commitments to etcd
+		log.Infof("[dev] no commitments found in etcd, skipping")
 	}
 }
 

@@ -89,6 +89,7 @@ func SaveCommitmentBlockToEtcd(etcdClient *clientv3.Client, blockId int, commitm
 	return rev, nil
 }
 
+// unused
 func SavePublicParamsToEtcd(etcdClient *clientv3.Client, pp *rbe.PublicParams,
 	onlyCommitments bool) (int64, error) {
 
