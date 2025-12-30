@@ -10,6 +10,7 @@ import (
 
 	"github.com/etclab/rbe"
 	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/sync/errgroup"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
@@ -26,6 +27,14 @@ import (
 )
 
 const RBE_PP_FILE = "/var/run/rbe-pp/rbe-pp.txt"
+
+const RBE_PP_ONLY_FILE = "/var/run/rbe-pp/rbe-pp-only.txt"
+const RBE_PP_CRS_H1_FILE = "/var/run/rbe-pp/rbe-crs-h1.txt"
+const RBE_PP_CRS_H2_FILE = "/var/run/rbe-pp/rbe-crs-h2.txt"
+
+// const RBE_PP_ONLY_FILE = "/var/run/secrets/istio-dns/rbe-pp-only.txt"
+// const RBE_PP_CRS_H1_FILE = "/var/run/secrets/istio-dns/rbe-crs-h1.txt"
+// const RBE_PP_CRS_H2_FILE = "/var/run/secrets/istio-dns/rbe-crs-h2.txt"
 
 func GenerateNonce() (string, error) {
 	nonceBytes := make([]byte, 32)
@@ -271,23 +280,178 @@ func CheckPodValidity(rbeId *security.RbeId, secret *security.RbeSecretItem) (re
 }
 
 func TryParseRbePpFromFile() (*rbe.PublicParams, error) {
-	filename := RBE_PP_FILE
+	// filename := RBE_PP_FILE
 
-	ppBytes, err := os.ReadFile(filename)
+	// ppBytes, err := os.ReadFile(filename)
+	// if err != nil {
+	// 	return nil, fmt.Errorf("could not read RBE public params file: %w", err)
+	// }
+
+	// // parse the public params from the file
+	// ppProto := &proto.PublicParams{}
+	// err = gproto.Unmarshal(ppBytes, ppProto)
+	// if err != nil {
+	// 	return nil, fmt.Errorf("could not unmarshal RBE public params from file: %w", err)
+	// }
+
+	// pp := new(rbe.PublicParams)
+	// pp.FromProto(ppProto)
+
+	// saveRbeParams(pp)
+	start := time.Now()
+	pp, err := restoreRbePp()
 	if err != nil {
-		return nil, fmt.Errorf("could not read RBE public params file: %w", err)
+		return nil, fmt.Errorf("could not restore RBE public params from files: %w", err)
+	}
+	log.Infof("[dev] restored RBE public params from files in %s", time.Since(start))
+
+	return pp, nil
+}
+
+func saveRbeParams(pp *rbe.PublicParams) (*rbe.PublicParams, error) {
+	// save crs h1 and h2 separately
+	crsH1 := new(rbe.CRS)
+	crsH1.H1 = pp.CRS.H1
+	crsH1.H2 = make([]*bls.G2, len(pp.CRS.H2))
+
+	// marshal and save
+	crsH1Proto := crsH1.ToProto()
+	crsH1Bytes, err := gproto.Marshal(crsH1Proto)
+	if err != nil {
+		return nil, fmt.Errorf("could not marshal RBE CRS H1 to proto: %w", err)
+	}
+	err = os.WriteFile(RBE_PP_CRS_H1_FILE, crsH1Bytes, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("could not write RBE CRS H1 to file: %w", err)
+	}
+	log.Infof("[dev] successfully saved RBE CRS H1 to file: %s", RBE_PP_CRS_H1_FILE)
+
+	crsH2 := new(rbe.CRS)
+	crsH2.H2 = pp.CRS.H2
+	crsH1.H1 = make([]*bls.G1, len(pp.CRS.H1))
+
+	// marshal and save
+	crsH2Proto := crsH2.ToProto()
+	crsH2Bytes, err := gproto.Marshal(crsH2Proto)
+	if err != nil {
+		return nil, fmt.Errorf("could not marshal RBE CRS H2 to proto: %w", err)
+	}
+	err = os.WriteFile(RBE_PP_CRS_H2_FILE, crsH2Bytes, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("could not write RBE CRS H2 to file: %w", err)
+	}
+	log.Infof("[dev] successfully saved RBE CRS H2 to file: %s", RBE_PP_CRS_H2_FILE)
+
+	ppWithoutCommitmentsAndCrs := &rbe.PublicParams{
+		MaxUsers:    pp.MaxUsers,
+		BlockSize:   pp.BlockSize,
+		NumBlocks:   pp.NumBlocks,
+		G1:          pp.G1,
+		G2:          pp.G2,
+		CRS:         &rbe.CRS{},
+		Commitments: []*bls.G1{},
+	}
+	// marshal and save
+	ppOnlyProto := ppWithoutCommitmentsAndCrs.ToProto()
+	ppOnlyBytes, err := gproto.Marshal(ppOnlyProto)
+	if err != nil {
+		return nil, fmt.Errorf("could not marshal RBE public params without commitments and crs to proto: %w", err)
+	}
+	err = os.WriteFile(RBE_PP_ONLY_FILE, ppOnlyBytes, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("could not write RBE public params without commitments and crs to file: %w", err)
+	}
+	log.Infof("[dev] successfully saved RBE public params without commitments and crs to file: %s", RBE_PP_ONLY_FILE)
+
+	return nil, nil
+}
+
+func restoreRbePp() (*rbe.PublicParams, error) {
+	var (
+		ppOnly *rbe.PublicParams
+		crsH1  *rbe.CRS
+		crsH2  *rbe.CRS
+	)
+
+	g, _ := errgroup.WithContext(context.Background())
+
+	// Goroutine 1: Read PP only file
+	g.Go(func() error {
+		ppOnlyBytes, err := os.ReadFile(RBE_PP_ONLY_FILE)
+		if err != nil {
+			return fmt.Errorf("could not read RBE public params only file: %w", err)
+		}
+
+		ppOnlyProto := &proto.PublicParams{}
+		if err := gproto.Unmarshal(ppOnlyBytes, ppOnlyProto); err != nil {
+			return fmt.Errorf("could not unmarshal RBE public params only from file: %w", err)
+		}
+
+		ppOnly = new(rbe.PublicParams)
+		ppOnly.FromProto(ppOnlyProto)
+
+		// Initialize commitments to identity
+		ppOnly.Commitments = make([]*bls.G1, ppOnly.NumBlocks)
+		for i := 0; i < ppOnly.NumBlocks; i++ {
+			ppOnly.Commitments[i] = new(bls.G1)
+			ppOnly.Commitments[i].SetIdentity()
+		}
+
+		return nil
+	})
+
+	// Goroutine 2: Read CRS H1 file
+	g.Go(func() error {
+		crsH1Bytes, err := os.ReadFile(RBE_PP_CRS_H1_FILE)
+		if err != nil {
+			return fmt.Errorf("could not read RBE CRS H1 file: %w", err)
+		}
+
+		crsH1Proto := &proto.CRS{}
+		if err := gproto.Unmarshal(crsH1Bytes, crsH1Proto); err != nil {
+			return fmt.Errorf("could not unmarshal RBE CRS H1 from file: %w", err)
+		}
+
+		crsH1 = new(rbe.CRS)
+		crsH1.FromProto(crsH1Proto)
+		return nil
+	})
+
+	// Goroutine 3: Read CRS H2 file
+	g.Go(func() error {
+		crsH2Bytes, err := os.ReadFile(RBE_PP_CRS_H2_FILE)
+		if err != nil {
+			return fmt.Errorf("could not read RBE CRS H2 file: %w", err)
+		}
+
+		crsH2Proto := &proto.CRS{}
+		if err := gproto.Unmarshal(crsH2Bytes, crsH2Proto); err != nil {
+			return fmt.Errorf("could not unmarshal RBE CRS H2 from file: %w", err)
+		}
+
+		crsH2 = new(rbe.CRS)
+		crsH2.FromProto(crsH2Proto)
+		return nil
+	})
+
+	// Wait for all goroutines and check for errors
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 
-	// parse the public params from the file
-	ppProto := &proto.PublicParams{}
-	err = gproto.Unmarshal(ppBytes, ppProto)
-	if err != nil {
-		return nil, fmt.Errorf("could not unmarshal RBE public params from file: %w", err)
+	// Build the final pp after all parallel reads complete
+	pp := &rbe.PublicParams{
+		BlockSize: ppOnly.BlockSize,
+		NumBlocks: ppOnly.NumBlocks,
+		MaxUsers:  ppOnly.MaxUsers,
+		G1:        ppOnly.G1,
+		G2:        ppOnly.G2,
+		CRS: &rbe.CRS{
+			H1: crsH1.H1,
+			H2: crsH2.H2,
+		},
+		Commitments: ppOnly.Commitments,
 	}
 
-	pp := new(rbe.PublicParams)
-	pp.FromProto(ppProto)
-
-	log.Infof("[dev] successfully parsed RBE public params from file: %s", filename)
 	return pp, nil
 }

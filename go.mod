@@ -24,7 +24,7 @@ require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc
 	github.com/docker/cli v27.2.0+incompatible
 	github.com/envoyproxy/go-control-plane v0.13.1-0.20240823165802-4363a624d376
-	github.com/etclab/rbe v0.0.0-20251106195840-62781deda7da
+	github.com/etclab/rbe v0.0.0-20251230072907-e417f4b8abc1
 	github.com/evanphx/json-patch/v5 v5.9.0
 	github.com/fatih/color v1.17.0
 	github.com/felixge/fgprof v0.9.5
