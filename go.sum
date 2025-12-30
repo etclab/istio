@@ -116,6 +116,8 @@ github.com/etclab/rbe v0.0.0-20250521192822-efd0c6c0a023 h1:aE0sxf8wudmpBw/tcE+T
 github.com/etclab/rbe v0.0.0-20250521192822-efd0c6c0a023/go.mod h1:A7y90GyngIFZC4SeJrHumiGGXQ7PqtGat90BjQzjrHI=
 github.com/etclab/trinc v0.0.0-20250516131847-a5987d5fcdba h1:QZJB1j0jKLzTFPXKrgP8CeP5z6bnUkNXRlTCDqLH/jk=
 github.com/etclab/trinc v0.0.0-20250516131847-a5987d5fcdba/go.mod h1:gUpioesKXg3xZ5qcovqjOByeTpU7DnnClPjIqNBxrAQ=
+github.com/etclab/rbe v0.0.0-20251230072907-e417f4b8abc1 h1:eaMv39Q+dL5jFmatqUOTwI/+WmmhnMajvCyT8BCUXCU=
+github.com/etclab/rbe v0.0.0-20251230072907-e417f4b8abc1/go.mod h1:A7y90GyngIFZC4SeJrHumiGGXQ7PqtGat90BjQzjrHI=
 github.com/evanphx/json-patch v5.9.0+incompatible h1:fBXyNpNMuTTDdquAq/uisOr2lShz4oaXpDTX2bLe7ls=
 github.com/evanphx/json-patch v5.9.0+incompatible/go.mod h1:50XU6AFN0ol/bzJsmQLiYLvXMP4fmwYFNcr97nuDLSk=
 github.com/evanphx/json-patch/v5 v5.9.0 h1:kcBlZQbplgElYIlo/n1hJbls2z/1awpXxpRi0/FOJfg=

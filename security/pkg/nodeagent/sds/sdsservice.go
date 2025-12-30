@@ -274,7 +274,7 @@ func (w *Watch) requested(secretName string) bool {
 }
 
 func (c *Context) Process(req *discovery.DiscoveryRequest) error {
-	log.Infof("[dev] processing request %s", req.String())
+	// log.Infof("[dev] processing request %s", req.String())
 
 	shouldRespond, delta := xds.ShouldRespond(c.Watcher(), c.XdsConnection().ID(), req)
 	if !shouldRespond {
@@ -290,7 +290,7 @@ func (c *Context) Process(req *discovery.DiscoveryRequest) error {
 	// try converting rbesecret into envoy secret
 	// resources = append(resources, security.WorkloadRbeIdentityCertResourceName)
 	res, err := c.s.generate(resources)
-	sdsServiceLog.Infof("[dev] response for resources (%+v) %+v", resources, res)
+	// sdsServiceLog.Infof("[dev] response for resources (%+v) %+v", resources, res)
 	if err != nil {
 		return err
 	}

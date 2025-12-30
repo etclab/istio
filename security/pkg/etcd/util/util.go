@@ -83,12 +83,13 @@ func SaveCommitmentBlockToEtcd(etcdClient *clientv3.Client, blockId int, commitm
 	if err != nil {
 		return rev, err
 	} else {
-		log.Infof("[dev] saved commitments for block: %d to etcd", blockId)
+		log.Infof("[dev] saved commitments for block: %d to etcd with revision: %d", blockId, rev)
 	}
 
 	return rev, nil
 }
 
+// unused
 func SavePublicParamsToEtcd(etcdClient *clientv3.Client, pp *rbe.PublicParams,
 	onlyCommitments bool) (int64, error) {
 
@@ -181,22 +182,22 @@ func SavePublicParamsToEtcd(etcdClient *clientv3.Client, pp *rbe.PublicParams,
 	}
 
 	// now save the commitments
-	commitments := &pb.Commitments{}
-	for _, v := range pp.Commitments {
-		commitG1 := &proto.G1{Point: v.BytesCompressed()}
-		commitments.Commitments = append(commitments.Commitments, commitG1)
-	}
-	commitmentsBytes, err := gproto.Marshal(commitments)
-	if err != nil {
-		return rev, fmt.Errorf("[dev] failed to marshal public params commitments: %v", err)
-	}
+	// commitments := &pb.Commitments{}
+	// for _, v := range pp.Commitments {
+	// 	commitG1 := &proto.G1{Point: v.BytesCompressed()}
+	// 	commitments.Commitments = append(commitments.Commitments, commitG1)
+	// }
+	// commitmentsBytes, err := gproto.Marshal(commitments)
+	// if err != nil {
+	// 	return rev, fmt.Errorf("[dev] failed to marshal public params commitments: %v", err)
+	// }
 
-	rev, err = PutKVToEtcd(etcdClient, kconstants.RBE_PP_COMMITMENTS_KEY, commitmentsBytes)
-	if err != nil {
-		return rev, err
-	} else {
-		log.Infof("[dev] saved public params commitments to etcd")
-	}
+	// rev, err = PutKVToEtcd(etcdClient, kconstants.RBE_PP_COMMITMENTS_KEY, commitmentsBytes)
+	// if err != nil {
+	// 	return rev, err
+	// } else {
+	// 	log.Infof("[dev] saved public params commitments to etcd")
+	// }
 
 	return rev, nil
 }
