@@ -36,7 +36,7 @@ message RegisterRequest {
 }
 
 message UserOpeningResponse {
-    repeated rbe.proto.G1 commitments = 1; 
+    rbe.proto.G1 commitment = 1; 
     repeated rbe.proto.G1 opening = 2; 
     repeated int64 usersBeforeMe = 3;
 }

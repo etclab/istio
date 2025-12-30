@@ -33,7 +33,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unsafe"
 
 	"github.com/etclab/rbe"
 	"github.com/fsnotify/fsnotify"
@@ -120,16 +119,25 @@ type SecretManagerClient struct {
 	muLastRevisionForBlock sync.RWMutex
 
 	// new map for user openings
-	userOpenings2   map[string][]*bls.G1
+	// map[user-id]map[commitment-mod-revision]opening
+	userOpenings2   map[int64]map[int64][]*bls.G1
 	muUserOpenings2 sync.RWMutex
 
 	lastRevisionForUser   map[string]int64
 	muLastRevisionForUser sync.RWMutex
 
+	lastCommitmentModRevisionForOpening   map[string]int64
+	muLastCommitmentModRevisionForOpening sync.RWMutex
+
 	resetOpeningsChan chan bool
 
 	rbePp   *rbe.PublicParams
 	muRbePp sync.RWMutex
+
+	// tracks the history of commitments for blocks
+	// map[block-id]map[commitment-mod-revision]commitment
+	commitmentsHistory   map[int64]map[int64]*bls.G1
+	muCommitmentsHistory sync.RWMutex
 
 	recentCommitments   map[int64][]*bls.G1
 	muRecentCommitments sync.RWMutex
@@ -320,8 +328,6 @@ func NewSecretManagerClient(caClient security.Client, options *security.Options)
 		caRootPath:             options.CARootPath,
 		receivedOpeningKeyChan: make(chan string, 100),
 		receivedUserKeyChan:    make(chan string, 100),
-
-		lastRevisionForBlock: make(map[int]int64),
 	}
 
 	go ret.queue.Run(ret.stop)
@@ -496,7 +502,8 @@ type RegisteredUser struct {
 
 // fetches and listens for updates to registered users from etcd
 func (sc *SecretManagerClient) GetWatchRegisteredUsers() {
-	userRes, err := sc.etcdClient.Get(context.Background(), kconstants.RBE_USER_PREFIX, clientv3.WithPrefix())
+	userRes, err := sc.etcdClient.Get(context.Background(), kconstants.RBE_USER_PREFIX,
+		clientv3.WithPrefix(), clientv3.WithSort(clientv3.SortByModRevision, clientv3.SortAscend))
 	if err != nil {
 		log.Errorf("[dev] failed to fetch existing users from etcd: %v", err)
 	}
@@ -517,7 +524,8 @@ func (sc *SecretManagerClient) GetWatchRegisteredUsers() {
 
 	// watch for updates to registered users
 	go func() {
-		uch := sc.etcdClient.Watch(context.Background(), kconstants.RBE_USER_PREFIX, clientv3.WithPrefix(), clientv3.WithRev(currentRevision+1))
+		uch := sc.etcdClient.Watch(context.Background(), kconstants.RBE_USER_PREFIX,
+			clientv3.WithPrefix(), clientv3.WithRev(currentRevision+1))
 		for newUserResp := range uch {
 			if newUserResp.Canceled {
 				log.Warnf("[dev] etcd watch canceled: %v", newUserResp.Err())
@@ -661,13 +669,14 @@ func (sc *SecretManagerClient) trackErroredWaiting(userId string, commRevision s
 
 	log.Infof("[dev] errored waiting map now: %+v", sc.erroredWaiting)
 
-	// defer func() {
-	// 	go sc.retryOneFromErroredWaiting()
-	// }()
+	defer func() {
+		time.AfterFunc(1*time.Second, sc.retryOneFromErroredWaiting)
+	}()
 }
 
 func (sc *SecretManagerClient) retryAllOpeningsForUser(newUserId string) {
 	log.Infof("[dev] retrying all openings for userId: %s", newUserId)
+
 	sc.muErroredWaiting.Lock()
 	defer sc.muErroredWaiting.Unlock()
 	for commRevision, userMap := range sc.erroredWaiting {
@@ -686,56 +695,249 @@ func (sc *SecretManagerClient) retryAllOpeningsForUser(newUserId string) {
 
 func (sc *SecretManagerClient) retryOneFromErroredWaiting() {
 	log.Infof("[dev] retrying one from errored waiting map")
+	var keyToRetry string
+
 	sc.muErroredWaiting.Lock()
-	defer sc.muErroredWaiting.Unlock()
 	for commRevision, userMap := range sc.erroredWaiting {
 		for userId := range userMap {
 			if userMap[userId] {
 				// found one to retry
 				log.Infof("[dev] retrying for userId: %s, commRevision: %s", userId, commRevision)
 				// add to the queue
-				sc.receivedOpeningKeyChan <- fmt.Sprintf("%s/%s/%s", kconstants.RBE_OPENINGS_KEY, commRevision, userId)
+				keyToRetry = fmt.Sprintf("%s/%s/%s", kconstants.RBE_OPENINGS_KEY, commRevision, userId)
 				// remove from the map - if this fails again it'll be added back
 				sc.erroredWaiting[commRevision][userId] = false
 
-				// only retry one at a time
-				return
+				break
 			}
 		}
+		// only retry one at a time
+		if keyToRetry != "" {
+			break
+		}
+	}
+	sc.muErroredWaiting.Unlock()
+
+	if keyToRetry != "" {
+		sc.receivedOpeningKeyChan <- keyToRetry
+	} else {
+		log.Infof("[dev] no more errored waiting entries to retry, erroredWaiting map: %+v", sc.erroredWaiting)
 	}
 }
 
-func (sc *SecretManagerClient) updatePodValidationWithOpeningUtil(userId string,
-	commRevision string, commRevInt int64) {
-	// get current user from rbeSecret
+func (sc *SecretManagerClient) getIfRbeSecretExists(userId string, commRevision string) (*security.RbeSecretItem, error) {
 	rbeSecret := sc.GetRbeCachedSecret(security.WorkloadRbeIdentityCertResourceName)
 	if rbeSecret == nil {
-		log.Warnf("[dev] rbeSecret is nil, cannot update pod validity map")
 		go sc.trackErroredWaiting(userId, commRevision)
-		return
+		return nil, fmt.Errorf("rbeSecret is nil")
+	} else {
+		return rbeSecret, nil
 	}
+}
 
-	// get other user's rbeId from regUsers map
-	otherUserRbeId := &security.RbeId{}
+func (sc *SecretManagerClient) getIfOtherUserExists(userId string, commRevision string) (*security.RbeId, error) {
 	sc.muRegUsers.RLock()
+	defer sc.muRegUsers.RUnlock()
+
+	otherUserRbeId := &security.RbeId{}
 	otherUser, exists := sc.regUsers[fmt.Sprintf("%s/%s", kconstants.RBE_USER_PREFIX, userId)]
-	sc.muRegUsers.RUnlock()
 
 	if !exists {
-		log.Warnf("[dev] other user rbeId not found for user id: %s", userId)
 		go sc.trackErroredWaiting(userId, commRevision)
-		return
+		return nil, fmt.Errorf("other user rbeId not found for user id: %s", userId)
 	} else {
 		port, err := strconv.Atoi(otherUser.Port)
 		if err != nil {
-			log.Errorf("[dev] err on converting port to int: %v", err)
-			return
+			// unlikely error so not tracking in erroredWaiting map
+			return nil, fmt.Errorf("err on converting port to int: %v", err)
 		}
 		otherUserRbeId = &security.RbeId{
 			Token: otherUser.Token,
 			Ip:    otherUser.Ip,
 			Port:  port,
 		}
+	}
+	return otherUserRbeId, nil
+}
+
+func (sc *SecretManagerClient) getIfMyOpeningExists(userId string, commRevision string) ([]*bls.G1, error) {
+	sc.muUserOpenings2.RLock()
+	defer sc.muUserOpenings2.RUnlock()
+
+	userIdInt, err := strconv.ParseInt(userId, 10, 64)
+	if err != nil {
+		go sc.trackErroredWaiting(userId, commRevision)
+		return nil, fmt.Errorf("error converting userId to int64: %v", err)
+	}
+
+	userOpenings, exists := sc.userOpenings2[userIdInt]
+	if !exists {
+		go sc.trackErroredWaiting(userId, commRevision)
+		return nil, fmt.Errorf("user openings not found for user id: %s", userId)
+	}
+
+	commRevInt, err := strconv.ParseInt(commRevision, 10, 64)
+	if err != nil {
+		go sc.trackErroredWaiting(userId, commRevision)
+		return nil, fmt.Errorf("error converting commRevision to int64: %v", err)
+	}
+
+	opening, exists := userOpenings[commRevInt]
+	if !exists {
+		// try and get the opening with the latest revision
+		var maxRev int64 = -1
+		for rev := range userOpenings {
+			if rev > maxRev {
+				maxRev = rev
+			}
+		}
+		if maxRev != -1 {
+			opening, exists = userOpenings[maxRev]
+			if !exists {
+				go sc.trackErroredWaiting(userId, commRevision)
+				return nil, fmt.Errorf("opening not found for user id: %s, commRevision: %s", userId, commRevision)
+			}
+			log.Warnf("[dev] opening not found for user id: %s, commRevision: %s, using latest revision: %d instead",
+				userId, commRevision, maxRev)
+		} else {
+			go sc.trackErroredWaiting(userId, commRevision)
+			return nil, fmt.Errorf("opening not found for user id: %s, commRevision: %s", userId, commRevision)
+		}
+	}
+
+	defer func() {
+		// print all the openings history for this user in a single line
+		revisions := []string{}
+		for rev := range userOpenings {
+			revisions = append(revisions, fmt.Sprintf("%d", rev))
+		}
+		log.Infof("[dev] my openings revisions for userId: %s: %s", userId, strings.Join(revisions, ","))
+	}()
+
+	return opening, nil
+}
+
+func (sc *SecretManagerClient) getIfOpeningExists(userId string, commRevision string) ([]*bls.G1, error) {
+	sc.muUserOpenings2.RLock()
+	defer sc.muUserOpenings2.RUnlock()
+
+	userIdInt, err := strconv.ParseInt(userId, 10, 64)
+	if err != nil {
+		go sc.trackErroredWaiting(userId, commRevision)
+		return nil, fmt.Errorf("error converting userId to int64: %v", err)
+	}
+
+	userOpenings, exists := sc.userOpenings2[userIdInt]
+	if !exists {
+		go sc.trackErroredWaiting(userId, commRevision)
+		return nil, fmt.Errorf("user openings not found for user id: %s", userId)
+	}
+
+	commRevInt, err := strconv.ParseInt(commRevision, 10, 64)
+	if err != nil {
+		go sc.trackErroredWaiting(userId, commRevision)
+		return nil, fmt.Errorf("error converting commRevision to int64: %v", err)
+	}
+
+	opening, exists := userOpenings[commRevInt]
+	if !exists {
+		go sc.trackErroredWaiting(userId, commRevision)
+		return nil, fmt.Errorf("opening not found for user id: %s, commRevision: %s", userId, commRevision)
+	}
+
+	defer func() {
+		// print the entire openings history for this user in a single line
+		revisions := []string{}
+		for rev := range userOpenings {
+			revisions = append(revisions, fmt.Sprintf("%d", rev))
+		}
+		log.Infof("[dev] openings revisions for userId: %s: %s", userId, strings.Join(revisions, ","))
+	}()
+
+	return opening, nil
+}
+
+func (sc *SecretManagerClient) getCommitmentForUser(blockId int, userId string,
+	commRevision string) (*bls.G1, error) {
+	sc.muCommitmentsHistory.RLock()
+	defer sc.muCommitmentsHistory.RUnlock()
+
+	commitmentRevs, exists := sc.commitmentsHistory[int64(blockId)]
+	if !exists {
+		go sc.trackErroredWaiting(userId, commRevision)
+		return nil, fmt.Errorf("no commitments found for block id: %d", blockId)
+	}
+
+	commRevInt, err := strconv.ParseInt(commRevision, 10, 64)
+	if err != nil {
+		go sc.trackErroredWaiting(userId, commRevision)
+		return nil, fmt.Errorf("error converting commRevision to int64: %v", err)
+	}
+
+	commitment, exists := commitmentRevs[commRevInt]
+	if !exists {
+		// try and get the commitment with the latest revision
+		var maxRev int64 = -1
+		for rev := range commitmentRevs {
+			if rev > maxRev {
+				maxRev = rev
+			}
+		}
+		if maxRev != -1 {
+			commitment, exists = commitmentRevs[maxRev]
+			if !exists {
+				go sc.trackErroredWaiting(userId, commRevision)
+				return nil, fmt.Errorf("no commitment found for block id: %d, commRevision: %s", blockId, commRevision)
+			}
+			log.Warnf("[dev] commitment not found for block id: %d, commRevision: %s, using latest revision: %d instead",
+				blockId, commRevision, maxRev)
+		} else {
+			go sc.trackErroredWaiting(userId, commRevision)
+			return nil, fmt.Errorf("no commitment found for block id: %d, commRevision: %s", blockId, commRevision)
+		}
+	}
+
+	defer func() {
+		// print the entire commitments history for this block in a single line
+		revisions := []string{}
+		for rev := range commitmentRevs {
+			revisions = append(revisions, fmt.Sprintf("%d", rev))
+		}
+		log.Infof("[dev] commitment revisions for userId: %s blockId %d: %s", userId, blockId, strings.Join(revisions, ","))
+	}()
+
+	return commitment, nil
+}
+
+func (sc *SecretManagerClient) updatePodValidationWithOpeningUtil(userId string,
+	commRevision string, commRevInt int64) {
+	// get current user from rbeSecret
+	rbeSecret, err := sc.getIfRbeSecretExists(userId, commRevision)
+	if err != nil {
+		log.Errorf("[dev] cannot update pod validity map, %v", err)
+		return
+	}
+	thisUser := rbeSecret.User
+	idThisUser := strconv.Itoa(thisUser.Id())
+
+	otherUserRbeId, err := sc.getIfOtherUserExists(userId, commRevision)
+	if err != nil {
+		log.Errorf("[dev] cannot update pod validity map, %v", err)
+		return
+	}
+	idOtherUser := int(otherUserRbeId.ToNumber())
+
+	// get the userOpenings
+	otherUserOpening, err := sc.getIfOpeningExists(userId, commRevision)
+	if err != nil {
+		log.Errorf("[dev] cannot update pod validity map, %v", err)
+		return
+	}
+
+	myOpening, err := sc.getIfMyOpeningExists(idThisUser, commRevision)
+	if err != nil {
+		log.Errorf("[dev] cannot update pod validity map, %v", err)
+		return
 	}
 
 	// derive the key from rbeId (ip|tokenHash)
@@ -744,64 +946,37 @@ func (sc *SecretManagerClient) updatePodValidationWithOpeningUtil(userId string,
 
 	key := fmt.Sprintf("%s|%s", otherUserRbeId.Ip, tokenHex)
 
-	// get the required commitments from recentCommitments map
+	// now for the commitments
 	commitments := []*bls.G1{}
-	// sc.muRecentCommitments.RLock()
-	// if sc.recentCommitments != nil {
-	// 	commitments = sc.recentCommitments[commRevInt]
-	// }
-	// sc.muRecentCommitments.RUnlock()
-
 	pp := new(rbe.PublicParams)
+
 	sc.muRbePp.RLock()
 	if sc.rbePp != nil {
 		pp = sc.rbePp
 		commitments = sc.rbePp.Commitments
 	}
-	sc.muRbePp.RUnlock()
+	defer sc.muRbePp.RUnlock()
 
-	if len(commitments) == 0 {
-		// log.Warnf("[dev] commitments not found for revision: %s", commRevision)
-		log.Warnf("[dev] commitments not found")
-		go sc.trackErroredWaiting(userId, commRevision)
+	thisUserBlock := pp.IdToBlock(thisUser.Id())
+	commitmentThisUser, err := sc.getCommitmentForUser(thisUserBlock, idThisUser, commRevision)
+	if err != nil {
+		log.Errorf("[dev] cannot update pod validity map, %v", err)
 		return
 	}
+	commitments[thisUserBlock] = commitmentThisUser
 
-	// get the userOpening from userOpenings map
-	otherUserOpening := []*bls.G1{}
-	myOpening := []*bls.G1{}
-	idOtherUser := int(otherUserRbeId.ToNumber())
-
-	// sc.muUserOpenings.RLock()
-	// if sc.userOpenings != nil && sc.userOpenings[commRevision] != nil {
-	// 	id := strconv.Itoa(rbeSecret.User.Id())
-	// 	myOpening = sc.userOpenings[commRevision][id]
-	// 	otherUserOpening = sc.userOpenings[commRevision][strconv.Itoa(idOtherUser)]
-	// }
-	// sc.muUserOpenings.RUnlock()
-	sc.muUserOpenings2.RLock()
-	if sc.userOpenings2 != nil {
-		id := strconv.Itoa(rbeSecret.User.Id())
-		myOpening = sc.userOpenings2[id]
-		otherUserOpening = sc.userOpenings2[strconv.Itoa(idOtherUser)]
-	}
-	sc.muUserOpenings2.RUnlock()
-
-	if len(otherUserOpening) == 0 {
-		log.Warnf("[dev] userOpening not found for other user id: %d, commitment revision: %s", idOtherUser, commRevision)
-		go sc.trackErroredWaiting(userId, commRevision)
+	otherUserBlock := pp.IdToBlock(idOtherUser)
+	commitmentOtherUser, err := sc.getCommitmentForUser(otherUserBlock, userId, commRevision)
+	if err != nil {
+		log.Errorf("[dev] cannot update pod validity map, %v", err)
 		return
 	}
+	commitments[otherUserBlock] = commitmentOtherUser
 
-	if len(myOpening) == 0 {
-		log.Warnf("[dev] myOpening not found for this user id: %d, commRevision: %s",
-			rbeSecret.User.Id(), commRevision)
-		go sc.trackErroredWaiting(userId, commRevision)
-		return
-	}
+	thisUser = rbeSecret.User
+	thisUser.Update(commitments, myOpening)
 
-	rbeSecret.User.Update(commitments, myOpening)
-	thisUser := rbeSecret.User
+	pp.Commitments = commitments
 
 	// encrypt and decrypt a random nonce
 	nonce := []byte(fmt.Sprintf("%d", time.Now().Unix()))
@@ -824,7 +999,8 @@ func (sc *SecretManagerClient) updatePodValidationWithOpeningUtil(userId string,
 
 		decryptedNonce, err := otherUser.Decrypt(cipherText)
 		if err != nil {
-			log.Warnf("[dev] failed to decrypt nonce: %v", err)
+			log.Warnf("[dev] failed to decrypt nonce for user %d: %v", idOtherUser, err)
+			go sc.trackErroredWaiting(userId, commRevision)
 		} else {
 			result = nonceHash.IsEqual(decryptedNonce)
 		}
@@ -837,55 +1013,10 @@ func (sc *SecretManagerClient) updatePodValidationWithOpeningUtil(userId string,
 	}
 	sc.podsValidityMap2[key] = result
 
-	go sc.addOtherUserAsVerified(result, otherUser.Id, thisUser.Id())
-	go sc.ackOpeningProcessed(result, otherUser.Id, thisUser.Id())
+	go sc.addOtherUserAsVerified(result, int64(idOtherUser), thisUser.Id())
+	go sc.ackOpeningProcessed(result, int64(idOtherUser), thisUser.Id())
 
 	log.Infof("[dev] updated pod validity map2 with key: %s, result: %v", key, result)
-
-	/*
-		sc.muPodsValidityMap.Lock()
-		defer sc.muPodsValidityMap.Unlock()
-		if sc.podsValidityMap == nil {
-			sc.podsValidityMap = make(map[string]map[string]bool)
-		}
-		if sc.podsValidityMap[commRevision] == nil {
-			sc.podsValidityMap[commRevision] = make(map[string]bool)
-		}
-		sc.podsValidityMap[commRevision][key] = result
-
-		// only choose the last three revisions
-		// merge all three revisions' pod validity map -> then save to json file
-		revisions := []int64{}
-		for revStr := range sc.podsValidityMap {
-			revInt, err := strconv.ParseInt(revStr, 10, 64)
-			if err != nil {
-				log.Errorf("[dev] invalid revision string in pod validity map: %s", revStr)
-				continue
-			}
-			revisions = append(revisions, revInt)
-		}
-		// sort revisions
-		slices.Sort(revisions)
-		// get last three revisions
-		lastThree := []int64{}
-		if len(revisions) <= 3 {
-			lastThree = revisions
-		} else {
-			lastThree = revisions[len(revisions)-3:]
-		}
-		mergedPodValidityMap := map[string]bool{}
-		for _, rev := range lastThree {
-			revStr := strconv.FormatInt(rev, 10)
-			for key, value := range sc.podsValidityMap[revStr] {
-				oldValue, exists := mergedPodValidityMap[key]
-				if exists {
-					mergedPodValidityMap[key] = value || oldValue
-				} else {
-					mergedPodValidityMap[key] = value
-				}
-			}
-		}
-	*/
 
 	// jsonString, err := json.Marshal(mergedPodValidityMap)
 	jsonString, err := json.Marshal(sc.podsValidityMap2)
@@ -979,6 +1110,8 @@ func (sc *SecretManagerClient) AmIReady(myUserId int) {
 		} else {
 			log.Infof("[dev] marked myself as ready in key curator")
 		}
+	} else {
+		log.Infof("[dev] current valid users map: %+v", sc.validUsersMap)
 	}
 }
 
@@ -1303,11 +1436,12 @@ func (sc *SecretManagerClient) handleRegisteredUserUpdate(keyStr string, value [
 		}
 
 		sc.muRegUsers.Lock()
+		defer sc.muRegUsers.Unlock()
+
 		if sc.regUsers == nil {
 			sc.regUsers = make(map[string]*RegisteredUser)
 		}
 		sc.regUsers[keyStr] = registeredUser
-		sc.muRegUsers.Unlock()
 
 		log.Infof("[dev] saved registered user for key: %s", keyStr)
 
@@ -1319,146 +1453,44 @@ func (sc *SecretManagerClient) handleRegisteredUserUpdate(keyStr string, value [
 	return nil
 }
 
-// fetches and listens for updates to public params and user openings from etcd
-func (sc *SecretManagerClient) GetWatchSystemParams() {
-	// before making a call for system params, ensure public params are restored from file
+func (sc *SecretManagerClient) readPublicParamsFromFile() error {
 	pp, err := keycurator.TryParseRbePpFromFile()
 	if err != nil {
-		log.Errorf("[dev] failed to parse rbe public params from file: %v", err)
+		return err
 	} else {
 		sc.muRbePp.Lock()
-		sc.rbePp = pp
-		sc.muRbePp.Unlock()
+		defer sc.muRbePp.Unlock()
 
+		sc.rbePp = pp
 		log.Infof("[dev] restored rbe public params from file before fetching from etcd")
+	}
+	return nil
+}
+
+// fetches and listens for updates to commitments and user openings from etcd
+func (sc *SecretManagerClient) GetWatchSystemParams() {
+	err := sc.readPublicParamsFromFile()
+	if err != nil {
+		log.Fatalf("[dev] failed to read public params from file: %v", err)
 	}
 
 	sysParamsRes, err := sc.etcdClient.Get(context.Background(), kconstants.RBE_PP_COMMITMENTS_KEY, clientv3.WithPrefix(),
 		clientv3.WithSort(clientv3.SortByModRevision, clientv3.SortAscend))
 	if err != nil {
-		log.Errorf("[dev] failed to fetch system params from etcd: %v", err)
+		log.Errorf("[dev] failed to fetch commitments from etcd: %v", err)
 		return
 	}
 
-	log.Infof("[dev] fetched %d keys from etcd", len(sysParamsRes.Kvs))
+	currentRevision := sysParamsRes.Header.Revision
 
+	log.Infof("[dev] fetched %d keys from etcd", len(sysParamsRes.Kvs))
 	for _, kv := range sysParamsRes.Kvs {
 		value := kv.Value
 		key := kv.Key
 		keyStr := string(key)
 
 		log.Infof("[dev] received key: %s, len(value): %d", key, len(value))
-
-		/*
-			// check if key is for public params
-			if keyStr == kconstants.RBE_PP_KEY {
-				ppProto := &proto.PublicParams{}
-				err := gproto.Unmarshal([]byte(value), ppProto)
-				if err != nil {
-					log.Errorf("[dev] failed to unmarshal public params from etcd: %v", err)
-					return
-				}
-
-				pp := new(rbe.PublicParams)
-				pp.FromProto(ppProto)
-
-				if pp.Commitments == nil {
-					pp.Commitments = make([]*bls.G1, pp.NumBlocks)
-					for i := 0; i < pp.NumBlocks; i++ {
-						pp.Commitments[i] = new(bls.G1)
-						pp.Commitments[i].SetIdentity()
-					}
-				}
-
-				sc.muRbePp.Lock()
-				if sc.rbePp == nil {
-					sc.rbePp = pp
-				} else {
-					sc.rbePp.MaxUsers = pp.MaxUsers
-					sc.rbePp.BlockSize = pp.BlockSize
-					sc.rbePp.NumBlocks = pp.NumBlocks
-					sc.rbePp.G1 = pp.G1
-					sc.rbePp.G2 = pp.G2
-					sc.rbePp.Commitments = pp.Commitments
-				}
-				sc.muRbePp.Unlock()
-
-				log.Infof("[dev] saved public params from etcd")
-			}
-
-			// TODO: get these values from the configmap instead of etcd
-			// TODO: before that ensure you can actually use/read these values
-			// TODO: from config map to initialize the public params at startup
-			if keyStr == kconstants.RBE_PP_CRS_H1_KEY {
-				crsH1Proto := &kproto.H1{}
-				err := gproto.Unmarshal([]byte(value), crsH1Proto)
-				if err != nil {
-					log.Errorf("[dev] failed to unmarshal crsH1 from etcd: %v", err)
-					return
-				}
-
-				size := len(crsH1Proto.H1)
-				h1 := make([]*bls.G1, size)
-
-				for i, v := range crsH1Proto.GetH1() {
-					if len(v.GetPoint()) == 0 {
-						h1[i] = nil
-					} else {
-						h1[i] = new(bls.G1)
-						err := h1[i].SetBytes(v.GetPoint())
-						if err != nil {
-							log.Errorf("error setting crs.H1[%d]: %v", i, err)
-						}
-					}
-				}
-
-				sc.muRbePp.Lock()
-				if sc.rbePp == nil {
-					pp := new(rbe.PublicParams)
-					pp.CRS = new(rbe.CRS)
-					pp.CRS.H1 = h1
-					sc.rbePp = pp
-				} else {
-					sc.rbePp.CRS.H1 = h1
-				}
-				sc.muRbePp.Unlock()
-			}
-
-			if keyStr == kconstants.RBE_PP_CRS_H2_KEY {
-				crsH2Proto := &kproto.H2{}
-				err := gproto.Unmarshal([]byte(value), crsH2Proto)
-				if err != nil {
-					log.Errorf("[dev] failed to unmarshal crsH2 from etcd: %v", err)
-					return
-				}
-
-				size := len(crsH2Proto.H2)
-				h2 := make([]*bls.G2, size)
-
-				for i, v := range crsH2Proto.GetH2() {
-					if len(v.GetPoint()) == 0 {
-						h2[i] = nil
-					} else {
-						h2[i] = new(bls.G2)
-						err := h2[i].SetBytes(v.GetPoint())
-						if err != nil {
-							log.Errorf("error setting crs.H2[%d]: %v", i, err)
-						}
-					}
-				}
-
-				sc.muRbePp.Lock()
-				if sc.rbePp == nil {
-					pp := new(rbe.PublicParams)
-					pp.CRS = new(rbe.CRS)
-					pp.CRS.H2 = h2
-					sc.rbePp = pp
-				} else {
-					sc.rbePp.CRS.H2 = h2
-				}
-				sc.muRbePp.Unlock()
-			}
-		*/
+		log.Infof("[dev] revisions for commitment key (%s): CreateRevision %d, ModRevision: %d", key, kv.CreateRevision, kv.ModRevision)
 
 		if strings.HasPrefix(keyStr, kconstants.RBE_PP_COMMITMENTS_KEY) {
 			// we're using WithSort above, so commitments should arrive after
@@ -1469,17 +1501,12 @@ func (sc *SecretManagerClient) GetWatchSystemParams() {
 				log.Errorf("[dev] failed to handle commitments update: %v", err)
 			} else {
 				// now use updates after this ModRevision only
-				sc.lastCommitmentsUpdate.Store(kv.ModRevision)
+				currentRevision = kv.ModRevision
 			}
 		}
-
 		// openings will be handled separately
 	}
 
-	currentRevision := sysParamsRes.Header.Revision
-	if sc.lastCommitmentsUpdate.Load() != nil {
-		currentRevision = sc.lastCommitmentsUpdate.Load().(int64)
-	}
 	log.Infof("current revision for system params is %d", currentRevision)
 
 	// watch for updates to commitments
@@ -1504,20 +1531,6 @@ func (sc *SecretManagerClient) GetWatchSystemParams() {
 					err := sc.handleCommitmentsUpdate(key, value, ev.Kv.ModRevision)
 					if err != nil {
 						log.Errorf("[dev] failed to handle commitments update: %v", err)
-					} else {
-						// now use updates after this ModRevision only
-						sc.lastCommitmentsUpdate.Store(ev.Kv.ModRevision)
-
-						// track the last revision for this block
-						sc.muLastRevisionForBlock.Lock()
-						blockIndexStr := strings.Split(key, "/")[3]
-						blockIndex, err := strconv.Atoi(blockIndexStr)
-						if err != nil {
-							log.Errorf("[dev] invalid block index in commitments key: %s", key)
-						} else {
-							sc.lastRevisionForBlock[blockIndex] = ev.Kv.ModRevision
-						}
-						sc.muLastRevisionForBlock.Unlock()
 					}
 				}
 			}
@@ -1528,9 +1541,8 @@ func (sc *SecretManagerClient) GetWatchSystemParams() {
 }
 
 func (sc *SecretManagerClient) ListWatchOpeningsUpdate(currentRevision int64) {
-	// openingsRes, err := sc.etcdClient.Get(ctx, kconstants.RBE_OPENINGS_KEY, clientv3.WithPrefix(), clientv3.WithRev(currentRevision+1))
 	openingsRes, err := sc.etcdClient.Get(context.Background(), fmt.Sprintf("%s/%d", kconstants.RBE_OPENINGS_KEY, currentRevision),
-		clientv3.WithPrefix())
+		clientv3.WithPrefix(), clientv3.WithSort(clientv3.SortByModRevision, clientv3.SortAscend))
 	if err != nil {
 		log.Errorf("[dev] failed to fetch openings from etcd: %v", err)
 		return
@@ -1538,16 +1550,18 @@ func (sc *SecretManagerClient) ListWatchOpeningsUpdate(currentRevision int64) {
 
 	log.Infof("[dev] fetched %d openings from etcd, currently the revision is: %d", len(openingsRes.Kvs), openingsRes.Header.Revision)
 
+	revision := openingsRes.Header.Revision
 	for _, kv := range openingsRes.Kvs {
 		value := kv.Value
 		key := kv.Key
 		keyStr := string(key)
 
 		log.Infof("[dev] handling openings with key: %s, modRevision: %d", key, kv.ModRevision)
-		err := sc.handleOpeningsUpdate(keyStr, value, kv.ModRevision)
+		err := sc.handleOpeningsUpdate(keyStr, value, kv.ModRevision, currentRevision)
 		if err != nil {
 			log.Errorf("[dev] failed to handle user opening update: %v", err)
 		}
+		revision = kv.ModRevision
 	}
 
 	// err = sc.updatePodValidationMap()
@@ -1555,7 +1569,6 @@ func (sc *SecretManagerClient) ListWatchOpeningsUpdate(currentRevision int64) {
 	// 	log.Errorf("[dev] failed to update pod validation map: %v", err)
 	// }
 
-	revision := openingsRes.Header.Revision
 	// watch for updates to openings under: rbe-system/openings/<commitment-mod-revision>/<user-id>
 	go func() {
 		opch := sc.etcdClient.Watch(context.Background(), fmt.Sprintf("%s/%d", kconstants.RBE_OPENINGS_KEY, currentRevision),
@@ -1574,7 +1587,7 @@ func (sc *SecretManagerClient) ListWatchOpeningsUpdate(currentRevision int64) {
 					value := ev.Kv.Value
 
 					log.Infof("[dev] handling openings with key: %s, len: %d, modRevision: %d", keyStr, len(value), ev.Kv.ModRevision)
-					err := sc.handleOpeningsUpdate(keyStr, value, ev.Kv.ModRevision)
+					err := sc.handleOpeningsUpdate(keyStr, value, ev.Kv.ModRevision, currentRevision)
 					if err != nil {
 						log.Errorf("[dev] failed to handle user opening update: %v", err)
 					}
@@ -1584,7 +1597,7 @@ func (sc *SecretManagerClient) ListWatchOpeningsUpdate(currentRevision int64) {
 	}()
 }
 
-func (sc *SecretManagerClient) handleOpeningsUpdate(keyStr string, value []byte, modRevision int64) error {
+func (sc *SecretManagerClient) handleOpeningsUpdate(keyStr string, value []byte, modRevision int64, commitmentRevision int64) error {
 
 	// parse user id from key
 	// key format: rbe-system/openings/<commitment-mod-revision>/<user-id>
@@ -1593,7 +1606,6 @@ func (sc *SecretManagerClient) handleOpeningsUpdate(keyStr string, value []byte,
 		return fmt.Errorf("[dev] invalid key format for user openings: %s", keyStr)
 	}
 	idStr := parts[3]
-	// revStr := parts[2]
 
 	openingsProto := &kproto.Opening{}
 	err := gproto.Unmarshal([]byte(value), openingsProto)
@@ -1608,51 +1620,27 @@ func (sc *SecretManagerClient) handleOpeningsUpdate(keyStr string, value []byte,
 		opening = append(opening, g1)
 	}
 
-	// sc.muUserOpenings.Lock()
-	// if sc.userOpenings == nil {
-	// 	sc.userOpenings = make(map[string]map[string][]*bls.G1)
-	// }
-	// if sc.userOpenings[revStr] == nil {
-	// 	sc.userOpenings[revStr] = make(map[string][]*bls.G1)
-	// }
-	// sc.userOpenings[revStr][idStr] = opening
-	// sc.muUserOpenings.Unlock()
-
 	sc.muUserOpenings2.Lock()
+	defer sc.muUserOpenings2.Unlock()
+
 	if sc.userOpenings2 == nil {
-		sc.userOpenings2 = make(map[string][]*bls.G1)
-	}
-	sc.muLastRevisionForUser.Lock()
-	if sc.lastRevisionForUser == nil {
-		sc.lastRevisionForUser = make(map[string]int64)
+		sc.userOpenings2 = make(map[int64]map[int64][]*bls.G1)
 	}
 
-	lastRev, exists := sc.lastRevisionForUser[idStr]
-	if exists && lastRev >= modRevision {
-		log.Warnf("[dev] skipping outdated user opening update for user %s: revision %d <= lastRev %d",
-			idStr, modRevision, sc.lastRevisionForUser[idStr])
-	} else {
-		log.Infof("[dev] updating user opening for user: %s, with revision: %d ",
-			idStr, modRevision)
-		sc.userOpenings2[idStr] = opening
-		sc.lastRevisionForUser[idStr] = modRevision
+	idInt64, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		return fmt.Errorf("[dev] invalid user id in user openings key: %s", idStr)
 	}
 
-	sc.muLastRevisionForUser.Unlock()
-	sc.muUserOpenings2.Unlock()
+	if sc.userOpenings2[idInt64] == nil {
+		sc.userOpenings2[idInt64] = make(map[int64][]*bls.G1)
+	}
+
+	sc.userOpenings2[idInt64][commitmentRevision] = opening
 
 	log.Infof("[dev] saved user openings for key: %s, len: %d, revision: %d", keyStr, len(value), modRevision)
 
-	// err = sc.updatePodValidationMap()
-	// if err != nil {
-	// 	log.Errorf("[dev] failed to update pod validation map: %v", err)
-	// }
 	sc.receivedOpeningKeyChan <- keyStr
-
-	// err = sc.updatePodValidationForOne(keyStr)
-	// if err != nil {
-	// 	log.Errorf("[dev] failed to update pod validation map: %v", err)
-	// }
 	return nil
 }
 
@@ -1683,204 +1671,157 @@ func (sc *SecretManagerClient) handleCommitmentsUpdate(key string, value []byte,
 			return fmt.Errorf("error setting commitment for block %d: %v", blockIndex, err)
 		}
 
-		sc.muRbePp.Lock()
-		if sc.rbePp != nil {
-			// check if revision is newer than last update for this block
-			sc.muLastRevisionForBlock.RLock()
-			lastRev, exists := sc.lastRevisionForBlock[blockIndex]
-			if exists && revision <= lastRev {
-				log.Infof("[dev] skipping outdated commitment update for block %d: revision %d <= lastRev %d", blockIndex, revision, lastRev)
-			} else {
-				sc.rbePp.Commitments[blockIndex] = commitment
-				log.Infof("[dev] updated commitment for block %d at revision %d", blockIndex, revision)
-				sc.lastRevisionForBlock[blockIndex] = revision
-			}
-			sc.muLastRevisionForBlock.RUnlock()
-		} else {
-			// we won't start watching for commitment updates to blocks unless
-			// we have the rbePp initialized so we can ignore this error
-			return fmt.Errorf("[dev] rbePp is nil, cannot update single block commitment")
+		sc.muCommitmentsHistory.Lock()
+		defer sc.muCommitmentsHistory.Unlock()
+
+		if sc.commitmentsHistory == nil {
+			sc.commitmentsHistory = make(map[int64]map[int64]*bls.G1)
 		}
-		sc.muRbePp.Unlock()
+		blockIndex64 := int64(blockIndex)
+		if sc.commitmentsHistory[blockIndex64] == nil {
+			sc.commitmentsHistory[blockIndex64] = make(map[int64]*bls.G1)
+		}
+		sc.commitmentsHistory[blockIndex64][revision] = commitment
 
 		go sc.ListWatchOpeningsUpdate(revision)
 
 		return nil
 	} else {
-		log.Infof("[dev] this is a commitment update for all blocks: %s", key)
+		log.Infof("[dev] invalid commitment key format: %s", key)
 	}
-
-	// commitmentsProto := &kproto.Commitments{}
-	// err := gproto.Unmarshal([]byte(value), commitmentsProto)
-	// if err != nil {
-	// 	return fmt.Errorf("[dev] failed to unmarshal commitments from etcd: %v", err)
-	// }
-
-	// commitments := make([]*bls.G1, len(commitmentsProto.Commitments))
-	// for i, v := range commitmentsProto.GetCommitments() {
-	// 	commitments[i] = new(bls.G1)
-	// 	err = commitments[i].SetBytes(v.GetPoint())
-	// 	if err != nil {
-	// 		return fmt.Errorf("error setting commitments[%d]: %v", i, err)
-	// 	}
-	// }
-
-	// sc.muRbePp.Lock()
-	// if sc.rbePp == nil {
-	// 	pp := new(rbe.PublicParams)
-	// 	pp.Commitments = commitments
-	// 	sc.rbePp = pp
-	// } else {
-	// 	sc.rbePp.Commitments = commitments
-	// }
-	// sc.muRbePp.Unlock()
-
-	// // TODO: there's no need to save all commitments anymore now
-	// // sc.muRecentCommitments.Lock()
-	// // if sc.recentCommitments == nil {
-	// // 	sc.recentCommitments = make(map[int64][]*bls.G1)
-	// // }
-	// // sc.recentCommitments[revision] = commitments
-	// // sc.muRecentCommitments.Unlock()
-
-	// log.Infof("[dev] updated commitments from etcd for key: %s, revision: %d", key, revision)
-
-	// // TODO: won't update Openings right now
-	// go sc.ListWatchOpeningsUpdate(revision)
-
 	return nil
 }
 
-func (sc *SecretManagerClient) UpdateUserOpenings() {
-	rbeSecret := sc.GetRbeCachedSecret(security.WorkloadRbeIdentityCertResourceName)
+// func (sc *SecretManagerClient) UpdateUserOpenings() {
+// 	rbeSecret := sc.GetRbeCachedSecret(security.WorkloadRbeIdentityCertResourceName)
 
-	if rbeSecret != nil {
-		id := int64(rbeSecret.User.Id())
+// 	if rbeSecret != nil {
+// 		id := int64(rbeSecret.User.Id())
 
-		pp, err := sc.kcClient.FetchPublicParams()
-		if err != nil {
-			log.Errorf("[dev] err on FetchPublicParams: %v", err)
-		}
+// 		pp, err := sc.kcClient.FetchPublicParams()
+// 		if err != nil {
+// 			log.Errorf("[dev] err on FetchPublicParams: %v", err)
+// 		}
 
-		// for single user
-		timeBeforeFAU := time.Now()
+// 		// for single user
+// 		timeBeforeFAU := time.Now()
 
-		commitments, userOpening, err := sc.kcClient.FetchUpdate(id)
-		if err != nil {
-			log.Errorf("[dev] err on FetchUpdate: %v", err)
-		}
-		rbeSecret.User.Update(commitments, userOpening)
+// 		commitments, userOpening, err := sc.kcClient.FetchUpdate(id)
+// 		if err != nil {
+// 			log.Errorf("[dev] err on FetchUpdate: %v", err)
+// 		}
+// 		rbeSecret.User.Update(commitments, userOpening)
 
-		totalTimeFAU := float64(time.Since(timeBeforeFAU).Nanoseconds()) / float64(time.Millisecond)
+// 		totalTimeFAU := float64(time.Since(timeBeforeFAU).Nanoseconds()) / float64(time.Millisecond)
 
-		keyUpdateTimeSingle.With(RequestType.Value(monitoring.MAZU)).Record(totalTimeFAU)
-		log.Infof("[dev] Key Update Time (Single): %f", totalTimeFAU)
+// 		keyUpdateTimeSingle.With(RequestType.Value(monitoring.MAZU)).Record(totalTimeFAU)
+// 		log.Infof("[dev] Key Update Time (Single): %f", totalTimeFAU)
 
-		totalSizeFAU := 0
+// 		totalSizeFAU := 0
 
-		for _, g := range commitments {
-			totalSizeFAU += len(g.Bytes())
-		}
+// 		for _, g := range commitments {
+// 			totalSizeFAU += len(g.Bytes())
+// 		}
 
-		for _, row := range userOpening {
-			totalSizeFAU += len(row.Bytes())
-		}
+// 		for _, row := range userOpening {
+// 			totalSizeFAU += len(row.Bytes())
+// 		}
 
-		keyUpdateSizeSingle.With(RequestType.Value(monitoring.MAZU)).Record(float64(totalSizeFAU))
-		log.Infof("[dev] Key Update Size (Single): %d", totalSizeFAU)
+// 		keyUpdateSizeSingle.With(RequestType.Value(monitoring.MAZU)).Record(float64(totalSizeFAU))
+// 		log.Infof("[dev] Key Update Size (Single): %d", totalSizeFAU)
 
-		log.Infof("[dev] Got the commitments (%d) and opening (%d) for user: %d", len(commitments), len(userOpening), id)
+// 		log.Infof("[dev] Got the commitments (%d) and opening (%d) for user: %d", len(commitments), len(userOpening), id)
 
-		// for all users
-		timeBeforeFAU = time.Now()
+// 		// for all users
+// 		timeBeforeFAU = time.Now()
 
-		commitments, allOpenings, allRbeIds, err := sc.kcClient.FetchAllUpdates()
-		if err != nil {
-			log.Errorf("[dev] err on FetchAllUpdates(): %v", err)
-		}
-		userOpening = allOpenings[id]
+// 		commitments, allOpenings, allRbeIds, err := sc.kcClient.FetchAllUpdates()
+// 		if err != nil {
+// 			log.Errorf("[dev] err on FetchAllUpdates(): %v", err)
+// 		}
+// 		userOpening = allOpenings[id]
 
-		totalTimeFAU = float64(time.Since(timeBeforeFAU).Nanoseconds()) / float64(time.Millisecond)
+// 		totalTimeFAU = float64(time.Since(timeBeforeFAU).Nanoseconds()) / float64(time.Millisecond)
 
-		keyUpdateTimeAll.With(RequestType.Value(monitoring.MAZU)).Record(totalTimeFAU)
-		log.Infof("[dev] Key Update Time (All): %f", totalTimeFAU)
+// 		keyUpdateTimeAll.With(RequestType.Value(monitoring.MAZU)).Record(totalTimeFAU)
+// 		log.Infof("[dev] Key Update Time (All): %f", totalTimeFAU)
 
-		totalSizeFAU = 0
+// 		totalSizeFAU = 0
 
-		for _, g := range commitments {
-			totalSizeFAU += len(g.Bytes())
-		}
+// 		for _, g := range commitments {
+// 			totalSizeFAU += len(g.Bytes())
+// 		}
 
-		for _, row := range allOpenings {
-			for _, g := range row {
-				totalSizeFAU += len(g.Bytes())
-			}
-		}
+// 		for _, row := range allOpenings {
+// 			for _, g := range row {
+// 				totalSizeFAU += len(g.Bytes())
+// 			}
+// 		}
 
-		for _, rbeId := range allRbeIds {
-			if rbeId == nil {
-				continue
-			}
+// 		for _, rbeId := range allRbeIds {
+// 			if rbeId == nil {
+// 				continue
+// 			}
 
-			totalSizeFAU += len([]byte(rbeId.Ip))
-			totalSizeFAU += int(unsafe.Sizeof(rbeId.Port))
-			totalSizeFAU += int(unsafe.Sizeof(rbeId.ExpireTime))
-			totalSizeFAU += len([]byte(rbeId.Token))
-		}
+// 			totalSizeFAU += len([]byte(rbeId.Ip))
+// 			totalSizeFAU += int(unsafe.Sizeof(rbeId.Port))
+// 			totalSizeFAU += int(unsafe.Sizeof(rbeId.ExpireTime))
+// 			totalSizeFAU += len([]byte(rbeId.Token))
+// 		}
 
-		keyUpdateSizeAll.With(RequestType.Value(monitoring.MAZU)).Record(float64(totalSizeFAU))
-		log.Infof("[dev] Key Update Size (All): %d", totalSizeFAU)
+// 		keyUpdateSizeAll.With(RequestType.Value(monitoring.MAZU)).Record(float64(totalSizeFAU))
+// 		log.Infof("[dev] Key Update Size (All): %d", totalSizeFAU)
 
-		// rbeSecret.User.Update(commitments, userOpening)
-		rbeSecret.Pp = pp
-		rbeSecret.Openings = allOpenings
-		rbeSecret.Commitments = commitments
+// 		// rbeSecret.User.Update(commitments, userOpening)
+// 		rbeSecret.Pp = pp
+// 		rbeSecret.Openings = allOpenings
+// 		rbeSecret.Commitments = commitments
 
-		sc.rbeCache.SetWorkload(rbeSecret)
+// 		sc.rbeCache.SetWorkload(rbeSecret)
 
-		podsValidity := map[string]bool{}
+// 		podsValidity := map[string]bool{}
 
-		log.Infof("[dev] all rbe ids: %+v", allRbeIds)
+// 		log.Infof("[dev] all rbe ids: %+v", allRbeIds)
 
-		for _, rbeId := range allRbeIds {
-			if rbeId == nil {
-				continue
-			}
-			key := fmt.Sprintf("%s|%s", rbeId.Ip, rbeId.Token)
-			podsValidity[key] = kcUtil.CheckPodValidity(rbeId, rbeSecret)
-		}
+// 		for _, rbeId := range allRbeIds {
+// 			if rbeId == nil {
+// 				continue
+// 			}
+// 			key := fmt.Sprintf("%s|%s", rbeId.Ip, rbeId.Token)
+// 			podsValidity[key] = kcUtil.CheckPodValidity(rbeId, rbeSecret)
+// 		}
 
-		log.Infof("[dev] printing pod validity map for all pods")
-		log.Infof("%+v", podsValidity)
+// 		log.Infof("[dev] printing pod validity map for all pods")
+// 		log.Infof("%+v", podsValidity)
 
-		jsonString, err := json.Marshal(podsValidity)
-		if err != nil {
-			fmt.Println("Error:", err)
-		} else {
-			fmt.Println(string(jsonString))
-		}
-		err = os.WriteFile("/etc/istio/proxy/pod_validity_data.json", jsonString, 0644)
-		if err != nil {
-			log.Errorf("[dev] err on WriteFile: %v", err)
-		}
+// 		jsonString, err := json.Marshal(podsValidity)
+// 		if err != nil {
+// 			fmt.Println("Error:", err)
+// 		} else {
+// 			fmt.Println(string(jsonString))
+// 		}
+// 		err = os.WriteFile("/etc/istio/proxy/pod_validity_data.json", jsonString, 0644)
+// 		if err != nil {
+// 			log.Errorf("[dev] err on WriteFile: %v", err)
+// 		}
 
-		sc.RegisterPodValidityMap(podsValidity)
-	} else {
-		log.Infof("[dev] no cached rbe secret\n")
-	}
+// 		sc.RegisterPodValidityMap(podsValidity)
+// 	} else {
+// 		log.Infof("[dev] no cached rbe secret\n")
+// 	}
 
-	// fetch updates once new nodes register with key curator (or k8s)
-	delaySeconds := 10
-	delay := time.Duration(delaySeconds) * time.Second
-	log.Infof("[dev] inside UpdateUserOpenings() -- will call again in %d seconds", delaySeconds)
+// 	// fetch updates once new nodes register with key curator (or k8s)
+// 	delaySeconds := 10
+// 	delay := time.Duration(delaySeconds) * time.Second
+// 	log.Infof("[dev] inside UpdateUserOpenings() -- will call again in %d seconds", delaySeconds)
 
-	sc.queue.PushDelayed(func() error {
-		if cached := sc.rbeCache.GetWorkload(); cached != nil {
-			sc.OnRbeOpeningsUpdate(cached.ResourceName)
-		}
-		return nil
-	}, delay)
-}
+// 	sc.queue.PushDelayed(func() error {
+// 		if cached := sc.rbeCache.GetWorkload(); cached != nil {
+// 			sc.OnRbeOpeningsUpdate(cached.ResourceName)
+// 		}
+// 		return nil
+// 	}, delay)
+// }
 
 // 1.3.6.1.4.1.9901
 var (
@@ -1930,12 +1871,11 @@ func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(rbeId *security.RbeId,
 
 		pp := new(rbe.PublicParams)
 		sc.muRbePp.RLock()
+		defer sc.muRbePp.RUnlock()
 		pp = sc.rbePp
-		sc.muRbePp.RUnlock()
 		if pp == nil {
 			return nil, fmt.Errorf("public params not found")
 		}
-		// log.Infof("[dev] commitments when registering the user %+v", pp.Commitments)
 
 		sk := new(bls.Scalar)
 		sk.SetUint64(uint64(rbeId.SecretKey()))
@@ -1943,30 +1883,29 @@ func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(rbeId *security.RbeId,
 		// create user
 		user = rbe.NewUserWithSecret(pp, int(id), sk)
 
-		commitments, opening, userIdsBeforeMe, err := sc.kcClient.RegisterUser(user, rbeId)
+		// TODO: completely remove the commitment and opening during registration
+		_, _, userIdsBeforeMe, err := sc.kcClient.RegisterUser(user, rbeId)
 		if err != nil {
 			log.Errorf("[dev] err on RegisterUser(): %v", err)
 			return nil, err
 		}
 
-		log.Infof("[dev] got commitments (len=%d) and opening (len=%d) from key curator for user id %d",
-			len(commitments), len(opening), id)
 		log.Infof("[dev] other users before me: %+v", userIdsBeforeMe)
 
 		sc.muUserIdsBeforeMe.Lock()
+		defer sc.muUserIdsBeforeMe.Unlock()
+
 		sc.userIdsBeforeMe = userIdsBeforeMe
 
 		sc.muValidUsersMap.Lock()
+		defer sc.muValidUsersMap.Unlock()
+
 		if sc.validUsersMap == nil {
 			sc.validUsersMap = make(map[int64]bool)
 		}
 		for _, uid := range userIdsBeforeMe {
 			sc.validUsersMap[uid] = false
 		}
-		sc.muValidUsersMap.Unlock()
-		sc.muUserIdsBeforeMe.Unlock()
-
-		user.Update(commitments, opening)
 	}
 
 	adminToken, err := kcUtil.GetPlatformCredential()
@@ -1975,10 +1914,6 @@ func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(rbeId *security.RbeId,
 		return nil, err
 	}
 
-	// note: k8s TokenReview API to verify the token
-	// log.Infof("[dev] admin token %v", adminToken)
-	// kcUtil.VerifyServiceAccountToken(adminToken)
-
 	extensions := []pkix.Extension{
 		{
 			Id:    AdminTokenOID,
@@ -1986,7 +1921,6 @@ func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(rbeId *security.RbeId,
 		},
 	}
 
-	// TODO: what other information do I need within the cert?
 	options := pkiutil.CertOptions{
 		Host:       rbeId.SpiffeId.String(),
 		RSAKeySize: sc.configOptions.WorkloadRSAKeySize,
@@ -2026,13 +1960,6 @@ func (sc *SecretManagerClient) GenerateWorkloadRbeSecrets(rbeId *security.RbeId,
 
 	sc.registerRbeSecret(*rsi)
 
-	// sometimes the user registration itself takes time, and by the time
-	// registration finishes and certificate is generated, the update to
-	// pod validation map may be missed. So updating pod validation map here.
-	// err = sc.updatePodValidationMap()
-	// if err != nil {
-	// 	log.Errorf("[dev] failed to update pod validation map: %v", err)
-	// }
 	sc.receivedUserKeyChan <- fmt.Sprintf("%s/%d", kconstants.RBE_USER_PREFIX, user.Id())
 
 	return rsi, nil

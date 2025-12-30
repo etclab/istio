@@ -127,79 +127,75 @@ func (c *KCClient) MarkReady(id int64, prefix string) error {
 	return nil
 }
 
-func (c *KCClient) FetchAllUpdates() ([]*bls.G1, [][]*bls.G1, []*security.RbeId, error) {
-	ctx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs("ClusterID", c.opts.ClusterID))
-	updResp, err := c.client.FetchAllUpdates(ctx, &emptypb.Empty{})
-	if err != nil {
-		log.Errorf("[dev] err on FetchAllUpdates(): %v", err)
-		return nil, nil, nil, err
-	}
+// func (c *KCClient) FetchAllUpdates() ([]*bls.G1, [][]*bls.G1, []*security.RbeId, error) {
+// 	ctx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs("ClusterID", c.opts.ClusterID))
+// 	updResp, err := c.client.FetchAllUpdates(ctx, &emptypb.Empty{})
+// 	if err != nil {
+// 		log.Errorf("[dev] err on FetchAllUpdates(): %v", err)
+// 		return nil, nil, nil, err
+// 	}
 
-	openings := make([][]*bls.G1, 0)
-	commitments := make([]*bls.G1, 0)
+// 	openings := make([][]*bls.G1, 0)
+// 	commitments := make([]*bls.G1, 0)
 
-	for _, v := range updResp.GetAllCommitments() {
-		g1 := new(bls.G1)
-		g1.SetBytes(v.GetPoint())
-		commitments = append(commitments, g1)
-	}
+// 	for _, v := range updResp.GetAllCommitments() {
+// 		g1 := new(bls.G1)
+// 		g1.SetBytes(v.GetPoint())
+// 		commitments = append(commitments, g1)
+// 	}
 
-	for _, v := range updResp.GetAllOpenings() {
-		userOpening := make([]*bls.G1, 0)
-		for _, u := range v.GetOpening() {
-			g1 := new(bls.G1)
-			g1.SetBytes(u.GetPoint())
-			userOpening = append(userOpening, g1)
-		}
-		openings = append(openings, userOpening)
-	}
+// 	for _, v := range updResp.GetAllOpenings() {
+// 		userOpening := make([]*bls.G1, 0)
+// 		for _, u := range v.GetOpening() {
+// 			g1 := new(bls.G1)
+// 			g1.SetBytes(u.GetPoint())
+// 			userOpening = append(userOpening, g1)
+// 		}
+// 		openings = append(openings, userOpening)
+// 	}
 
-	history := updResp.GetHistory()
-	allRbeIds := make([]*security.RbeId, len(history))
-	for _, registrationEvent := range history {
-		// TODO: make everything string
-		port, err := strconv.Atoi(registrationEvent.GetPort())
-		if err != nil {
-			log.Infof("[dev] err on converting port to int: %v", err)
-			continue
-		}
+// 	history := updResp.GetHistory()
+// 	allRbeIds := make([]*security.RbeId, len(history))
+// 	for _, registrationEvent := range history {
+// 		// TODO: make everything string
+// 		port, err := strconv.Atoi(registrationEvent.GetPort())
+// 		if err != nil {
+// 			log.Infof("[dev] err on converting port to int: %v", err)
+// 			continue
+// 		}
 
-		rbeId := &security.RbeId{
-			Token: registrationEvent.GetToken(),
-			Ip:    registrationEvent.GetIp(),
-			Port:  port,
-		}
-		allRbeIds = append(allRbeIds, rbeId)
-	}
+// 		rbeId := &security.RbeId{
+// 			Token: registrationEvent.GetToken(),
+// 			Ip:    registrationEvent.GetIp(),
+// 			Port:  port,
+// 		}
+// 		allRbeIds = append(allRbeIds, rbeId)
+// 	}
 
-	return commitments, openings, allRbeIds, nil
-}
+// 	return commitments, openings, allRbeIds, nil
+// }
 
-func (c *KCClient) FetchUpdate(id int64) ([]*bls.G1, []*bls.G1, error) {
-	updReq := &pb.UpdateRequest{
-		Id: id,
-	}
+// func (c *KCClient) FetchUpdate(id int64) (*bls.G1, []*bls.G1, error) {
+// 	updReq := &pb.UpdateRequest{
+// 		Id: id,
+// 	}
 
-	ctx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs("ClusterID", c.opts.ClusterID))
-	updResp, err := c.client.FetchUpdate(ctx, updReq)
-	if err != nil {
-		log.Errorf("[dev] err on FetchUpdate(): %v", err)
-		return nil, nil, err
-	}
+// 	ctx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs("ClusterID", c.opts.ClusterID))
+// 	updResp, err := c.client.FetchUpdate(ctx, updReq)
+// 	if err != nil {
+// 		log.Errorf("[dev] err on FetchUpdate(): %v", err)
+// 		return nil, nil, err
+// 	}
 
-	commitments, opening := getCommitmentsOpenings(updResp)
+// 	commitment, opening := getCommitmentsOpenings(updResp)
 
-	return commitments, opening, nil
-}
+// 	return commitment, opening, nil
+// }
 
-func getCommitmentsOpenings(uoResp *pb.UserOpeningResponse) ([]*bls.G1, []*bls.G1) {
+func getCommitmentsOpenings(uoResp *pb.UserOpeningResponse) (*bls.G1, []*bls.G1) {
 
-	commitments := []*bls.G1{}
-	for _, v := range uoResp.GetCommitments() {
-		g1 := new(bls.G1)
-		g1.SetBytes(v.GetPoint())
-		commitments = append(commitments, g1)
-	}
+	commitment := &bls.G1{}
+	commitment.SetBytes(uoResp.GetCommitment().GetPoint())
 
 	opening := []*bls.G1{}
 	for _, v := range uoResp.GetOpening() {
@@ -208,11 +204,11 @@ func getCommitmentsOpenings(uoResp *pb.UserOpeningResponse) ([]*bls.G1, []*bls.G
 		opening = append(opening, g1)
 	}
 
-	return commitments, opening
+	return commitment, opening
 }
 
 // return values: commitments, opening, user-ids-before-me, error
-func (c *KCClient) RegisterUser(user *rbe.User, rbeId *security.RbeId) ([]*bls.G1,
+func (c *KCClient) RegisterUser(user *rbe.User, rbeId *security.RbeId) (*bls.G1,
 	[]*bls.G1, []int64, error) {
 	xi := user.Xi()
 
@@ -242,11 +238,11 @@ func (c *KCClient) RegisterUser(user *rbe.User, rbeId *security.RbeId) ([]*bls.G
 		log.Errorf("[dev] err on RegisterUser(): %v", err)
 		return nil, nil, nil, err
 	}
-	commitments, opening := getCommitmentsOpenings(regR)
+	commitment, opening := getCommitmentsOpenings(regR)
 
 	userIdsBeforeMe := regR.GetUsersBeforeMe()
 
-	return commitments, opening, userIdsBeforeMe, nil
+	return commitment, opening, userIdsBeforeMe, nil
 }
 
 func (c *KCClient) FetchPublicParams() (*rbe.PublicParams, error) {

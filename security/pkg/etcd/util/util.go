@@ -83,7 +83,7 @@ func SaveCommitmentBlockToEtcd(etcdClient *clientv3.Client, blockId int, commitm
 	if err != nil {
 		return rev, err
 	} else {
-		log.Infof("[dev] saved commitments for block: %d to etcd", blockId)
+		log.Infof("[dev] saved commitments for block: %d to etcd with revision: %d", blockId, rev)
 	}
 
 	return rev, nil

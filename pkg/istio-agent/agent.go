@@ -489,7 +489,7 @@ func (a *Agent) getRbeUserId() (*security.RbeId, error) {
 	if err != nil {
 		log.Errorf("failed to generate bootstrap metadata: %v", err)
 	}
-	log.Infof("[dev] where is the port for ingress gateways: %+v", node.Metadata)
+	// log.Infof("[dev] where is the port for ingress gateways: %+v", node.Metadata)
 	// ingress gateway doesn't have the pod ports set
 	port := 443 // default port
 	log.Infof("[dev] pod ports: %+v", node.Metadata.PodPorts)

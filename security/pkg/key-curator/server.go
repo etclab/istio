@@ -576,67 +576,65 @@ func (kcs *KeyCuratorServer) addToHistory(token string, ip string, port string,
 }
 
 // fetches updates for all users
-func (kcs *KeyCuratorServer) FetchAllUpdates(_ context.Context, in *emptypb.Empty) (*pb.AllUpdatesResponse, error) {
-	allOpenings := []*pb.Opening{}
-	allCommitments := []*proto.G1{}
+// func (kcs *KeyCuratorServer) FetchAllUpdates(_ context.Context, in *emptypb.Empty) (*pb.AllUpdatesResponse, error) {
+// 	allOpenings := []*pb.Opening{}
+// 	allCommitments := []*proto.G1{}
 
-	for _, v := range kcs.kc.UserOpenings {
-		openings := []*proto.G1{}
-		for _, u := range v {
-			openings = append(openings, &proto.G1{Point: u.Bytes()})
-		}
-		allOpenings = append(allOpenings, &pb.Opening{Opening: openings})
-	}
+// 	for _, v := range kcs.kc.UserOpenings {
+// 		openings := []*proto.G1{}
+// 		for _, u := range v {
+// 			openings = append(openings, &proto.G1{Point: u.Bytes()})
+// 		}
+// 		allOpenings = append(allOpenings, &pb.Opening{Opening: openings})
+// 	}
 
-	for _, v := range kcs.kc.PP.Commitments {
-		allCommitments = append(allCommitments, &proto.G1{Point: v.Bytes()})
-	}
+// 	for _, v := range kcs.kc.PP.Commitments {
+// 		allCommitments = append(allCommitments, &proto.G1{Point: v.Bytes()})
+// 	}
 
-	// TODO: how would this change on sending proof of membership instead?
-	history := []*pb.RegistrationEvent{}
-	for _, v := range kcs.history {
+// 	// TODO: how would this change on sending proof of membership instead?
+// 	history := []*pb.RegistrationEvent{}
+// 	for _, v := range kcs.history {
 
-		xiProto := make([]*proto.G1, len(v.xi))
-		for i, v := range v.xi {
-			if v == nil {
-				xiProto[i] = nil
-			} else {
-				xiProto[i] = &proto.G1{Point: v.Bytes()}
-			}
-		}
+// 		xiProto := make([]*proto.G1, len(v.xi))
+// 		for i, v := range v.xi {
+// 			if v == nil {
+// 				xiProto[i] = nil
+// 			} else {
+// 				xiProto[i] = &proto.G1{Point: v.Bytes()}
+// 			}
+// 		}
 
-		history = append(history, &pb.RegistrationEvent{
-			Token:     v.token,
-			Ip:        v.ip,
-			Port:      v.port,
-			Id:        int64(v.id),
-			PublicKey: &proto.G1{Point: v.publicKey.Bytes()},
-			Xi:        xiProto,
-		})
-	}
+// 		history = append(history, &pb.RegistrationEvent{
+// 			Token:     v.token,
+// 			Ip:        v.ip,
+// 			Port:      v.port,
+// 			Id:        int64(v.id),
+// 			PublicKey: &proto.G1{Point: v.publicKey.Bytes()},
+// 			Xi:        xiProto,
+// 		})
+// 	}
 
-	return &pb.AllUpdatesResponse{
-		AllOpenings:    allOpenings,
-		AllCommitments: allCommitments,
-		History:        history,
-	}, nil
-}
+// 	return &pb.AllUpdatesResponse{
+// 		AllOpenings:    allOpenings,
+// 		AllCommitments: allCommitments,
+// 		History:        history,
+// 	}, nil
+// }
 
-func (kcs *KeyCuratorServer) FetchUpdate(_ context.Context, in *pb.UpdateRequest) (*pb.UserOpeningResponse, error) {
-	id := int(in.GetId())
+// func (kcs *KeyCuratorServer) FetchUpdate(_ context.Context, in *pb.UpdateRequest) (*pb.UserOpeningResponse, error) {
+// 	id := int(in.GetId())
 
-	opening := []*proto.G1{}
-	for _, v := range kcs.kc.UserOpenings[id] {
-		opening = append(opening, &proto.G1{Point: v.Bytes()})
-	}
+// 	opening := []*proto.G1{}
+// 	for _, v := range kcs.kc.UserOpenings[id] {
+// 		opening = append(opening, &proto.G1{Point: v.Bytes()})
+// 	}
 
-	commitments := []*proto.G1{}
-	for _, v := range kcs.kc.PP.Commitments {
-		commitments = append(commitments, &proto.G1{Point: v.Bytes()})
-	}
+// 	blockId := kcs.kc.PP.IdToBlock(id)
+// 	blockCommitment := &proto.G1{Point: kcs.kc.PP.Commitments[blockId].Bytes()}
 
-	return &pb.UserOpeningResponse{Opening: opening, Commitments: commitments}, nil
-}
+// 	return &pb.UserOpeningResponse{Opening: opening, Commitment: blockCommitment}, nil
+// }
 
 func (kcs *KeyCuratorServer) MarkReady(_ context.Context, in *pb.ReadyRequest) (*emptypb.Empty, error) {
 	userId := in.GetId()
@@ -701,11 +699,8 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 		opening = append(opening, &proto.G1{Point: v.Bytes()})
 	}
 
-	// TODO: only send commitments for the blocks that changed
-	commitments := []*proto.G1{}
-	for _, v := range kcs.kc.PP.Commitments {
-		commitments = append(commitments, &proto.G1{Point: v.Bytes()})
-	}
+	blockId := kcs.kc.PP.IdToBlock(id)
+	blockCommitment := &proto.G1{Point: kcs.kc.PP.Commitments[blockId].Bytes()}
 
 	kcs.registeredIds[id] = true
 	if source == "api" {
@@ -724,7 +719,7 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 		log.Infof("[dev] skip updating system params in etcd, not the leader")
 	}
 
-	return &pb.UserOpeningResponse{Opening: opening, Commitments: commitments,
+	return &pb.UserOpeningResponse{Opening: opening, Commitment: blockCommitment,
 		UsersBeforeMe: usersBeforeMe}, nil
 }
 
