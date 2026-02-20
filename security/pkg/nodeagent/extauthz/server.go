@@ -2,11 +2,20 @@ package extauthz
 
 import (
 	"context"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/asn1"
+	"encoding/hex"
+	"encoding/pem"
+	"fmt"
 	"net"
+	"net/url"
+	"strings"
 	"time"
 
 	"go.uber.org/atomic"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	"google.golang.org/genproto/googleapis/rpc/status"
@@ -21,7 +30,7 @@ const (
 
 var extAuthzLog = log.RegisterScope("ext-authz", "ext_authz gRPC server")
 
-// ExtAuthzServer is an always-allow ext_authz gRPC server that listens on a UDS.
+// ExtAuthzServer is an ext_authz gRPC server that listens on a UDS.
 type ExtAuthzServer struct {
 	grpcServer *grpc.Server
 	listener   net.Listener
@@ -29,11 +38,80 @@ type ExtAuthzServer struct {
 }
 
 // Check implements the envoy ext_authz v3 AuthorizationServer interface.
-// It always returns OK (code 0).
-func (s *ExtAuthzServer) Check(_ context.Context, _ *authv3.CheckRequest) (*authv3.CheckResponse, error) {
-	extAuthzLog.Infof("Received Check request, allowing by default")
+func (s *ExtAuthzServer) Check(_ context.Context, req *authv3.CheckRequest) (*authv3.CheckResponse, error) {
+	attrs := req.GetAttributes()
+
+	// --- Log source (downstream caller) info ---
+	src := attrs.GetSource()
+	extAuthzLog.Infof("Check: source.principal=%q, source.service=%q",
+		src.GetPrincipal(), src.GetService())
+	if src.GetAddress() != nil {
+		if sa := src.GetAddress().GetSocketAddress(); sa != nil {
+			extAuthzLog.Infof("Check: source.address=%s:%d", sa.GetAddress(), sa.GetPortValue())
+		}
+	}
+	if len(src.GetLabels()) > 0 {
+		extAuthzLog.Infof("Check: source.labels=%v", src.GetLabels())
+	}
+
+	// --- Log destination info ---
+	dst := attrs.GetDestination()
+	extAuthzLog.Infof("Check: destination.principal=%q, destination.service=%q",
+		dst.GetPrincipal(), dst.GetService())
+	if dst.GetAddress() != nil {
+		if sa := dst.GetAddress().GetSocketAddress(); sa != nil {
+			extAuthzLog.Infof("Check: destination.address=%s:%d", sa.GetAddress(), sa.GetPortValue())
+		}
+	}
+	if len(dst.GetLabels()) > 0 {
+		extAuthzLog.Infof("Check: destination.labels=%v", dst.GetLabels())
+	}
+
+	// --- Log TLS session ---
+	if tls := attrs.GetTlsSession(); tls != nil {
+		extAuthzLog.Infof("Check: tls_session.sni=%q", tls.GetSni())
+	} else {
+		extAuthzLog.Infof("Check: tls_session=nil (is IncludeTlsSession enabled?)")
+	}
+
+	// --- Log context extensions and metadata ---
+	if len(attrs.GetContextExtensions()) > 0 {
+		extAuthzLog.Infof("Check: context_extensions=%v", attrs.GetContextExtensions())
+	}
+	if attrs.GetMetadataContext() != nil {
+		extAuthzLog.Infof("Check: metadata_context=%v", attrs.GetMetadataContext())
+	}
+
+	// --- Parse and inspect the source peer certificate ---
+	// Per envoy docs, Source.Certificate is "URL and PEM encoded" — must URL-decode first.
+	certRaw := src.GetCertificate()
+	if certRaw != "" {
+		extAuthzLog.Infof("Check: source.certificate present (%d bytes)", len(certRaw))
+
+		cert, err := parsePeerCertificate(certRaw)
+		if err != nil {
+			extAuthzLog.Errorf("Check: failed to parse source certificate: %v", err)
+		} else {
+			logCertDetails(cert)
+
+			// Check if the caller is an ingress gateway via SAN URIs
+			isGateway := false
+			for _, uri := range cert.URIs {
+				if strings.Contains(uri.String(), "/sa/istio-ingressgateway") ||
+					strings.Contains(uri.String(), "/sa/istio-gateway") {
+					isGateway = true
+				}
+			}
+			extAuthzLog.Infof("Check: isIngressGateway=%v", isGateway)
+		}
+	} else {
+		extAuthzLog.Infof("Check: source.certificate is empty (is IncludePeerCertificate enabled?)")
+	}
+
+	// For now, always return OK — real validation logic TBD
+	extAuthzLog.Infof("Check: returning OK (validation not yet implemented)")
 	return &authv3.CheckResponse{
-		Status: &status.Status{Code: 0},
+		Status: &status.Status{Code: int32(codes.OK)},
 	}, nil
 }
 
@@ -81,6 +159,83 @@ func NewExtAuthzServer() *ExtAuthzServer {
 	}()
 
 	return s
+}
+
+// parsePeerCertificate URL-decodes and PEM-decodes the certificate string from envoy,
+// then parses it as an X.509 certificate.
+func parsePeerCertificate(certRaw string) (*x509.Certificate, error) {
+	certPEM, err := url.QueryUnescape(certRaw)
+	if err != nil {
+		return nil, fmt.Errorf("URL-decode: %w", err)
+	}
+	block, _ := pem.Decode([]byte(certPEM))
+	if block == nil {
+		preview := certPEM
+		if len(preview) > 200 {
+			preview = preview[:200]
+		}
+		return nil, fmt.Errorf("PEM-decode failed, preview: %s", preview)
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("x509 parse: %w", err)
+	}
+	return cert, nil
+}
+
+// logCertDetails logs all relevant fields and extensions from an X.509 certificate.
+func logCertDetails(cert *x509.Certificate) {
+	extAuthzLog.Infof("Check: cert.Subject=%s", cert.Subject)
+	extAuthzLog.Infof("Check: cert.Issuer=%s", cert.Issuer)
+	extAuthzLog.Infof("Check: cert.SerialNumber=%s", cert.SerialNumber)
+	extAuthzLog.Infof("Check: cert.NotBefore=%s, cert.NotAfter=%s", cert.NotBefore, cert.NotAfter)
+	extAuthzLog.Infof("Check: cert.URIs=%v", cert.URIs)
+	extAuthzLog.Infof("Check: cert.DNSNames=%v", cert.DNSNames)
+	extAuthzLog.Infof("Check: cert.IPAddresses=%v", cert.IPAddresses)
+	extAuthzLog.Infof("Check: cert.EmailAddresses=%v", cert.EmailAddresses)
+	extAuthzLog.Infof("Check: cert.IsCA=%v", cert.IsCA)
+	extAuthzLog.Infof("Check: cert.KeyUsage=%d", cert.KeyUsage)
+	extAuthzLog.Infof("Check: cert.ExtKeyUsage=%v", cert.ExtKeyUsage)
+
+	// Log all X.509 extensions (both standard and custom)
+	for _, ext := range cert.Extensions {
+		logExtension("Extension", ext)
+	}
+	for _, ext := range cert.ExtraExtensions {
+		logExtension("ExtraExtension", ext)
+	}
+}
+
+// logExtension logs a single X.509 extension with its OID, criticality, and value.
+func logExtension(label string, ext pkix.Extension) {
+	name := oidName(ext.Id)
+	extAuthzLog.Infof("Check: cert.%s: OID=%s (%s), critical=%v, value(%d bytes)=%s",
+		label, ext.Id, name, ext.Critical, len(ext.Value), hex.EncodeToString(ext.Value))
+
+	// Try to decode as UTF8String or PrintableString for readable extensions
+	var str string
+	if _, err := asn1.Unmarshal(ext.Value, &str); err == nil {
+		extAuthzLog.Infof("Check: cert.%s: OID=%s decoded_string=%q", label, ext.Id, str)
+	}
+}
+
+// oidName returns a human-readable name for well-known X.509 extension OIDs.
+func oidName(oid asn1.ObjectIdentifier) string {
+	known := map[string]string{
+		"2.5.29.14":  "SubjectKeyIdentifier",
+		"2.5.29.15":  "KeyUsage",
+		"2.5.29.17":  "SubjectAlternativeName",
+		"2.5.29.19":  "BasicConstraints",
+		"2.5.29.35":  "AuthorityKeyIdentifier",
+		"2.5.29.37":  "ExtendedKeyUsage",
+		"2.5.29.31":  "CRLDistributionPoints",
+		"2.5.29.32":  "CertificatePolicies",
+		"1.3.6.1.4.1.11129.2.4.2": "SCTList",
+	}
+	if name, ok := known[oid.String()]; ok {
+		return name
+	}
+	return "unknown"
 }
 
 // Stop gracefully shuts down the ext_authz server.

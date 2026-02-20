@@ -68,8 +68,10 @@ func buildExtAuthzNetworkFilter() *listener.Filter {
 			},
 			Timeout: durationpb.New(5 * time.Second),
 		},
-		FailureModeAllow: false,
-		StatPrefix: "ext_authz",
+		FailureModeAllow:       false,
+		StatPrefix:             "ext_authz",
+		IncludePeerCertificate: true,
+		IncludeTlsSession:      true,
 	}
 	return &listener.Filter{
 		Name:       wellknown.ExternalAuthorization,
