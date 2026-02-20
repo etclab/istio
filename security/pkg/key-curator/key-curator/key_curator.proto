@@ -13,6 +13,7 @@ service KeyCurator {
     rpc FetchPublicParams(google.protobuf.Empty) returns (PublicParamsResponse) {}
     rpc RegisterUser(RegisterRequest) returns (UserOpeningResponse) {}
     rpc MarkReady(ReadyRequest) returns (google.protobuf.Empty) {}
+    rpc StreamRegistrations(google.protobuf.Empty) returns (stream RegistrationNotification) {}
 }
 
 message ReadyRequest {
@@ -94,4 +95,9 @@ message CounterAttestation {
 message ECDSASignature {
     bytes r = 1;
     bytes s = 2;
+}
+
+message RegistrationNotification {
+    string message = 1;
+    int64 id = 2;
 }

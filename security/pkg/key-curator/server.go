@@ -91,6 +91,10 @@ type KeyCuratorServer struct {
 	logWriter *kceval.MLogWriter
 
 	amIReady atomic.Bool
+
+	subscribersMu sync.RWMutex
+	subscribers   map[int64]chan *pb.RegistrationNotification
+	nextSubID     int64
 }
 
 func (kcs *KeyCuratorServer) ListWatchRBEUsers() {
@@ -523,8 +527,9 @@ func NewKeyCuratorServer(maxUsers int, podName string) *KeyCuratorServer {
 
 		registrationQueue: make(chan UserRequest, 100),
 		// pod id of istiod instance
-		leaseId:   podName,
-		logWriter: kceval.NewMLogWriter(""),
+		leaseId:     podName,
+		logWriter:   kceval.NewMLogWriter(""),
+		subscribers: make(map[int64]chan *pb.RegistrationNotification),
 	}
 
 	// channel to receive signals when lease is acquired/ready and when etcd is
@@ -820,6 +825,7 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 	blockCommitment := &proto.G1{Point: kcs.kc.PP.Commitments[blockId].Bytes()}
 
 	kcs.registeredIds[id] = true
+	kcs.notifySubscribers(id)
 	if source == "api" {
 		// only send to etcd if registering a new user via API
 		// this means only this instance of istiod received this request
@@ -907,4 +913,51 @@ func (kcs *KeyCuratorServer) RegisterUser(_ context.Context, in *pb.RegisterRequ
 // Register registers a GRPC server on the specified port.
 func (s *KeyCuratorServer) Register(grpcServer *grpc.Server) {
 	pb.RegisterKeyCuratorServer(grpcServer, s)
+}
+
+func (kcs *KeyCuratorServer) StreamRegistrations(_ *emptypb.Empty, stream pb.KeyCurator_StreamRegistrationsServer) error {
+	kcs.subscribersMu.Lock()
+	id := kcs.nextSubID
+	kcs.nextSubID++
+	ch := make(chan *pb.RegistrationNotification, 64)
+	kcs.subscribers[id] = ch
+	kcs.subscribersMu.Unlock()
+
+	log.Infof("[dev] StreamRegistrations: subscriber %d connected", id)
+
+	defer func() {
+		kcs.subscribersMu.Lock()
+		delete(kcs.subscribers, id)
+		kcs.subscribersMu.Unlock()
+		log.Infof("[dev] StreamRegistrations: subscriber %d disconnected", id)
+	}()
+
+	for {
+		select {
+		case <-stream.Context().Done():
+			return stream.Context().Err()
+		case notif := <-ch:
+			if err := stream.Send(notif); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func (kcs *KeyCuratorServer) notifySubscribers(id int) {
+	notif := &pb.RegistrationNotification{
+		Message: fmt.Sprintf("registered user with id: %d", id),
+		Id:      int64(id),
+	}
+
+	kcs.subscribersMu.RLock()
+	defer kcs.subscribersMu.RUnlock()
+
+	for _, ch := range kcs.subscribers {
+		select {
+		case ch <- notif:
+		default:
+			// drop if subscriber is slow
+		}
+	}
 }

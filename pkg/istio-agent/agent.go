@@ -50,6 +50,8 @@ import (
 	"istio.io/istio/pkg/wasm"
 	kcUtil "istio.io/istio/security/pkg/key-curator/util"
 	"istio.io/istio/security/pkg/nodeagent/cache"
+	"istio.io/istio/security/pkg/nodeagent/extauthz"
+	"istio.io/istio/security/pkg/nodeagent/kcclient"
 )
 
 const (
@@ -154,6 +156,8 @@ type Agent struct {
 
 	// areOthersReadyChan is used to signal when other services are ready
 	areOthersReadyChan chan bool
+
+	extAuthzServer *extauthz.ExtAuthzServer
 }
 
 // AgentOptions contains additional config for the agent, not included in ProxyConfig.
@@ -418,6 +422,24 @@ func (a *Agent) Run(ctx context.Context) (func(), error) {
 			return nil, fmt.Errorf("failed to start default Istio SDS server: %v", err)
 		}
 	}
+	// Start ext_authz gRPC server on UDS
+	a.extAuthzServer = extauthz.NewExtAuthzServer()
+
+	// Start KC registration stream in background with reconnect
+	if kcConcrete, ok := a.secretCache.GetKCClientConcrete().(*kcclient.KCClient); ok {
+		go func() {
+			for {
+				log.Infof("[dev] Starting KC StreamRegistrations")
+				err := kcConcrete.StreamRegistrations(ctx)
+				if ctx.Err() != nil {
+					return
+				}
+				log.Warnf("[dev] KC StreamRegistrations disconnected: %v, reconnecting in 5s", err)
+				time.Sleep(5 * time.Second)
+			}
+		}()
+	}
+
 	a.xdsProxy, err = initXdsProxy(a)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start xds proxy: %v", err)
@@ -758,6 +780,9 @@ func (a *Agent) GetDNSTable() *dnsProto.NameTable {
 }
 
 func (a *Agent) Close() {
+	if a.extAuthzServer != nil {
+		a.extAuthzServer.Stop()
+	}
 	if a.xdsProxy != nil {
 		a.xdsProxy.close()
 	}

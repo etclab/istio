@@ -361,6 +361,10 @@ func (sc *SecretManagerClient) SetKCClient(skc security.KeyCuratorClient) {
 	sc.kcClient = skc
 }
 
+func (sc *SecretManagerClient) GetKCClientConcrete() security.KeyCuratorClient {
+	return sc.kcClient
+}
+
 func (sc *SecretManagerClient) SetReadyChannel(readyChan chan bool) {
 	sc.readyChan = readyChan
 }
