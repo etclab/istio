@@ -2,8 +2,11 @@ package trincutil
 
 import (
 	"bytes"
+	"crypto/ecdsa"
 	"crypto/sha256"
+	"fmt"
 	"math/big"
+	"sync"
 
 	"github.com/etclab/trinc"
 	"istio.io/istio/pkg/log"
@@ -13,6 +16,16 @@ import (
 const TPM_SK_PATH = "/etc/tpm-keys/privateKey"
 const TPM_PK_PATH = "/etc/tpm-keys/publicKey"
 const DefaultTPMDevPath = "/dev/tpmrm0"
+
+var (
+	tpmPublicKey *ecdsa.PublicKey
+	loadPkOnce   sync.Once
+	loadPkErr    error
+
+	trinket     *trinc.Trinket
+	loadTkOnce  sync.Once
+	loadTkErr   error
+)
 
 // returns and returns the secret key from TPM
 func ReadTPMSk() {
@@ -24,21 +37,29 @@ func ReadTPMSk() {
 	log.Infof("[dev] Read TPM_SK_PATH %v", sk)
 }
 
+// loadTrinket loads the TPM private key and creates a Trinket instance.
+// It uses sync.Once to ensure the Trinket is created only once.
+func loadTrinket() (*trinc.Trinket, error) {
+	loadTkOnce.Do(func() {
+		sk, err := trinc.LoadECDSAPrivateKeyFromPEMFile(TPM_SK_PATH)
+		if err != nil {
+			loadTkErr = fmt.Errorf("can't load private key file %q: %w", TPM_SK_PATH, err)
+			return
+		}
+		trinket, loadTkErr = trinc.NewTrinket(DefaultTPMDevPath, sk)
+	})
+	return trinket, loadTkErr
+}
+
 func DoAttestCounter(msg []byte) (attestation *trinc.CounterAttestation, err error) {
 	// msgHash is simply sha256 hash of message bytes
 	msgHash := sha256.Sum256(msg)
 
-	skFile := TPM_SK_PATH
-	sk, err := trinc.LoadECDSAPrivateKeyFromPEMFile(skFile)
+	tk, err := loadTrinket()
 	if err != nil {
-		log.Errorf("[dev] error: can't load private key file %q: %v", skFile, err)
+		log.Errorf("[dev] error: can't initialize trinket: %v", err)
+		return nil, err
 	}
-
-	tk, err := trinc.NewTrinket(DefaultTPMDevPath, sk)
-	if err != nil {
-		log.Errorf("[dev] error: can't create trinket: %v", err)
-	}
-	defer tk.Close()
 
 	attestation, err = tk.AttestCounter(msgHash[:])
 	if err != nil {
@@ -91,18 +112,26 @@ func AttestationFromProto(attestationPb *pb.CounterAttestation) *trinc.CounterAt
 // 	}
 // }
 
+// loadTpmPublicKey loads the TPM public key from the predefined path.
+// It uses sync.Once to ensure the file is read only once.
+func loadTpmPublicKey() (*ecdsa.PublicKey, error) {
+	loadPkOnce.Do(func() {
+		tpmPublicKey, loadPkErr = trinc.LoadECDSAPublicKeyFromPEMFile(TPM_PK_PATH)
+	})
+	return tpmPublicKey, loadPkErr
+}
+
 func DoVerifyCounter(msgBytes []byte, attestation *trinc.CounterAttestation) bool {
 	if attestation == nil || msgBytes == nil {
 		log.Errorf("[dev] error: attestation or msgBytes is nil")
 		return false
 	}
 
-	pk, err := trinc.LoadECDSAPublicKeyFromPEMFile(TPM_PK_PATH)
+	pk, err := loadTpmPublicKey()
 	if err != nil {
 		log.Errorf("[dev] error: can't read public key file %q: %v", TPM_PK_PATH, err)
 		return false
 	}
-	log.Infof("[dev] Read TPM_PK_PATH %v", pk)
 
 	msgHash := sha256.Sum256(msgBytes)
 
