@@ -4,15 +4,22 @@ import (
 	"context"
 	"io"
 
-	"google.golang.org/protobuf/types/known/emptypb"
 	"istio.io/istio/pkg/log"
+	pb "istio.io/istio/security/pkg/key-curator/key-curator"
 )
 
-// StreamRegistrations opens a server-streaming RPC to the KeyCurator and logs
-// each RegistrationNotification received. It blocks until the stream ends or
-// the context is cancelled.
-func (c *KCClient) StreamRegistrations(ctx context.Context) error {
-	stream, err := c.client.StreamRegistrations(ctx, &emptypb.Empty{})
+// RegistrationHandler is a callback invoked for each RegistrationNotification.
+type RegistrationHandler func(notif *pb.RegistrationNotification)
+
+// StreamRegistrations opens a server-streaming RPC to the KeyCurator and invokes
+// handler for each RegistrationNotification received. subscriberId is the caller's
+// own RBE user ID, used by the server to track what has already been sent and avoid
+// duplicates on reconnect. If handler is nil, the notification is only logged.
+// It blocks until the stream ends or the context is cancelled.
+func (c *KCClient) StreamRegistrations(ctx context.Context, subscriberId int64, handler RegistrationHandler) error {
+	stream, err := c.client.StreamRegistrations(ctx, &pb.StreamRegistrationsRequest{
+		SubscriberId: subscriberId,
+	})
 	if err != nil {
 		return err
 	}
@@ -26,6 +33,9 @@ func (c *KCClient) StreamRegistrations(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		log.Infof("[dev] StreamRegistrations: %s (id=%d)", notif.GetMessage(), notif.GetId())
+		log.Infof("[dev] StreamRegistrations: received registration for id=%d", notif.GetId())
+		if handler != nil {
+			handler(notif)
+		}
 	}
 }

@@ -13,7 +13,7 @@ service KeyCurator {
     rpc FetchPublicParams(google.protobuf.Empty) returns (PublicParamsResponse) {}
     rpc RegisterUser(RegisterRequest) returns (UserOpeningResponse) {}
     rpc MarkReady(ReadyRequest) returns (google.protobuf.Empty) {}
-    rpc StreamRegistrations(google.protobuf.Empty) returns (stream RegistrationNotification) {}
+    rpc StreamRegistrations(StreamRegistrationsRequest) returns (stream RegistrationNotification) {}
 }
 
 message ReadyRequest {
@@ -97,7 +97,13 @@ message ECDSASignature {
     bytes s = 2;
 }
 
+message StreamRegistrationsRequest {
+    int64 subscriberId = 1;  // the subscriber's own RBE user ID
+}
+
 message RegistrationNotification {
-    string message = 1;
-    int64 id = 2;
+    int64 id = 1;
+    rbe.proto.G1 proof = 2;
+    CounterAttestation counterAttestation = 3;
+    bytes registerRequestBytes = 4;
 }

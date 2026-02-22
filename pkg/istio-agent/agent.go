@@ -48,10 +48,12 @@ import (
 	"istio.io/istio/pkg/security"
 	"istio.io/istio/pkg/spiffe"
 	"istio.io/istio/pkg/wasm"
+	pb "istio.io/istio/security/pkg/key-curator/key-curator"
 	kcUtil "istio.io/istio/security/pkg/key-curator/util"
 	"istio.io/istio/security/pkg/nodeagent/cache"
 	"istio.io/istio/security/pkg/nodeagent/extauthz"
 	"istio.io/istio/security/pkg/nodeagent/kcclient"
+	"istio.io/istio/security/pkg/nodeagent/regstate"
 )
 
 const (
@@ -158,6 +160,7 @@ type Agent struct {
 	areOthersReadyChan chan bool
 
 	extAuthzServer *extauthz.ExtAuthzServer
+	regStore       *regstate.Store
 }
 
 // AgentOptions contains additional config for the agent, not included in ProxyConfig.
@@ -422,15 +425,31 @@ func (a *Agent) Run(ctx context.Context) (func(), error) {
 			return nil, fmt.Errorf("failed to start default Istio SDS server: %v", err)
 		}
 	}
-	// Start ext_authz gRPC server on UDS
-	a.extAuthzServer = extauthz.NewExtAuthzServer()
+	// Create shared registration state store and start ext_authz server
+	a.regStore = regstate.NewStore()
+	a.extAuthzServer = extauthz.NewExtAuthzServer(a.regStore, a.secretCache)
 
-	// Start KC registration stream in background with reconnect
+	// Start KC registration stream in background with reconnect.
+	// Compute our RBE ID to identify ourselves to the server for cursor tracking.
 	if kcConcrete, ok := a.secretCache.GetKCClientConcrete().(*kcclient.KCClient); ok {
+		rbeId, rbeIdErr := a.getRbeUserId()
+		var subscriberId int64
+		if rbeIdErr == nil {
+			subscriberId = rbeId.ToNumber()
+		}
 		go func() {
 			for {
-				log.Infof("[dev] Starting KC StreamRegistrations")
-				err := kcConcrete.StreamRegistrations(ctx)
+				log.Infof("[dev] Starting KC StreamRegistrations (subscriberId=%d)", subscriberId)
+				err := kcConcrete.StreamRegistrations(ctx, subscriberId, func(notif *pb.RegistrationNotification) {
+					pp := a.secretCache.GetPublicParams()
+					if pp == nil {
+						log.Warnf("[dev] PublicParams not yet available, skipping verification for id=%d", notif.GetId())
+						return
+					}
+					if !regstate.VerifyAndStore(a.regStore, pp, notif) {
+						log.Errorf("[dev] verification failed for registration id=%d", notif.GetId())
+					}
+				})
 				if ctx.Err() != nil {
 					return
 				}

@@ -20,7 +20,11 @@ import (
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	"google.golang.org/genproto/googleapis/rpc/status"
 	"istio.io/istio/pkg/log"
+	"istio.io/istio/pkg/security"
 	"istio.io/istio/pkg/uds"
+	"istio.io/istio/security/pkg/nodeagent/regstate"
+
+	"github.com/etclab/rbe"
 )
 
 const (
@@ -30,11 +34,19 @@ const (
 
 var extAuthzLog = log.RegisterScope("ext-authz", "ext_authz gRPC server")
 
+// SecretCacheReader is the minimal interface the ext_authz server needs from the secret cache.
+type SecretCacheReader interface {
+	GetRbeWorkload() *security.RbeSecretItem
+	GetPublicParams() *rbe.PublicParams
+}
+
 // ExtAuthzServer is an ext_authz gRPC server that listens on a UDS.
 type ExtAuthzServer struct {
-	grpcServer *grpc.Server
-	listener   net.Listener
-	stopped    *atomic.Bool
+	grpcServer  *grpc.Server
+	listener    net.Listener
+	stopped     *atomic.Bool
+	regStore    *regstate.Store
+	secretCache SecretCacheReader
 }
 
 // Check implements the envoy ext_authz v3 AuthorizationServer interface.
@@ -83,7 +95,6 @@ func (s *ExtAuthzServer) Check(_ context.Context, req *authv3.CheckRequest) (*au
 	}
 
 	// --- Parse and inspect the source peer certificate ---
-	// Per envoy docs, Source.Certificate is "URL and PEM encoded" — must URL-decode first.
 	certRaw := src.GetCertificate()
 	if certRaw != "" {
 		extAuthzLog.Infof("Check: source.certificate present (%d bytes)", len(certRaw))
@@ -94,31 +105,64 @@ func (s *ExtAuthzServer) Check(_ context.Context, req *authv3.CheckRequest) (*au
 		} else {
 			logCertDetails(cert)
 
-			// Check if the caller is an ingress gateway via SAN URIs
-			isGateway := false
+			// Allow ingress gateway traffic through
 			for _, uri := range cert.URIs {
 				if strings.Contains(uri.String(), "/sa/istio-ingressgateway") ||
 					strings.Contains(uri.String(), "/sa/istio-gateway") {
-					isGateway = true
+					extAuthzLog.Infof("Check: source is ingress gateway, allowing")
+					return allow(), nil
 				}
 			}
-			extAuthzLog.Infof("Check: isIngressGateway=%v", isGateway)
 		}
 	} else {
 		extAuthzLog.Infof("Check: source.certificate is empty (is IncludePeerCertificate enabled?)")
 	}
 
-	// For now, always return OK — real validation logic TBD
-	extAuthzLog.Infof("Check: returning OK (validation not yet implemented)")
+	// --- RBE validation stub ---
+	// TODO: this should fail closed later, but allow until implemented.
+	// Check if this pod's RBE identity is available (graceful startup)
+	if s.secretCache == nil || s.secretCache.GetRbeWorkload() == nil {
+		extAuthzLog.Infof("Check: RBE workload not yet available, allowing")
+		return allow(), nil
+	}
+	if s.secretCache.GetPublicParams() == nil {
+		extAuthzLog.Infof("Check: PublicParams not yet available, allowing")
+		return allow(), nil
+	}
+
+	// Check if the source user is in the registration store
+	// TODO: derive the source user's RBE ID from the request attributes
+	// (token extraction from cert SAN / context extensions / source principal — deferred)
+	//
+	// TODO: once we have the source user's RBE ID:
+	// 1. Look up the user in s.regStore.Get(otherUserId)
+	// 2. Perform CheckPodValidity()-style RBE encrypt/decrypt nonce check
+	//    - This requires commitment + opening for the other user, which are not
+	//      yet streamed. Options: derive from Xi+PublicKey, or source from
+	//      secretCache etcd-watched state, or add to the notification later.
+	extAuthzLog.Infof("Check: RBE validation not yet implemented, allowing")
+	return allow(), nil
+}
+
+func allow() *authv3.CheckResponse {
 	return &authv3.CheckResponse{
 		Status: &status.Status{Code: int32(codes.OK)},
-	}, nil
+	}
+}
+
+func deny(reason string) *authv3.CheckResponse {
+	extAuthzLog.Infof("Check: DENIED — %s", reason)
+	return &authv3.CheckResponse{
+		Status: &status.Status{Code: int32(codes.Unauthenticated), Message: reason},
+	}
 }
 
 // NewExtAuthzServer creates and starts the ext_authz gRPC server on a UDS.
-func NewExtAuthzServer() *ExtAuthzServer {
+func NewExtAuthzServer(store *regstate.Store, sc SecretCacheReader) *ExtAuthzServer {
 	s := &ExtAuthzServer{
-		stopped: atomic.NewBool(false),
+		stopped:     atomic.NewBool(false),
+		regStore:    store,
+		secretCache: sc,
 	}
 
 	s.grpcServer = grpc.NewServer()
@@ -222,14 +266,14 @@ func logExtension(label string, ext pkix.Extension) {
 // oidName returns a human-readable name for well-known X.509 extension OIDs.
 func oidName(oid asn1.ObjectIdentifier) string {
 	known := map[string]string{
-		"2.5.29.14":  "SubjectKeyIdentifier",
-		"2.5.29.15":  "KeyUsage",
-		"2.5.29.17":  "SubjectAlternativeName",
-		"2.5.29.19":  "BasicConstraints",
-		"2.5.29.35":  "AuthorityKeyIdentifier",
-		"2.5.29.37":  "ExtendedKeyUsage",
-		"2.5.29.31":  "CRLDistributionPoints",
-		"2.5.29.32":  "CertificatePolicies",
+		"2.5.29.14":               "SubjectKeyIdentifier",
+		"2.5.29.15":               "KeyUsage",
+		"2.5.29.17":               "SubjectAlternativeName",
+		"2.5.29.19":               "BasicConstraints",
+		"2.5.29.35":               "AuthorityKeyIdentifier",
+		"2.5.29.37":               "ExtendedKeyUsage",
+		"2.5.29.31":               "CRLDistributionPoints",
+		"2.5.29.32":               "CertificatePolicies",
 		"1.3.6.1.4.1.11129.2.4.2": "SCTList",
 	}
 	if name, ok := known[oid.String()]; ok {

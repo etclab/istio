@@ -365,6 +365,16 @@ func (sc *SecretManagerClient) GetKCClientConcrete() security.KeyCuratorClient {
 	return sc.kcClient
 }
 
+func (sc *SecretManagerClient) GetPublicParams() *rbe.PublicParams {
+	sc.muRbePp.RLock()
+	defer sc.muRbePp.RUnlock()
+	return sc.rbePp
+}
+
+func (sc *SecretManagerClient) GetRbeWorkload() *security.RbeSecretItem {
+	return sc.rbeCache.GetWorkload()
+}
+
 func (sc *SecretManagerClient) SetReadyChannel(readyChan chan bool) {
 	sc.readyChan = readyChan
 }

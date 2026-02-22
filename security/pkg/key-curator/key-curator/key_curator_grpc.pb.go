@@ -37,7 +37,7 @@ type KeyCuratorClient interface {
 	FetchPublicParams(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*PublicParamsResponse, error)
 	RegisterUser(ctx context.Context, in *RegisterRequest, opts ...grpc.CallOption) (*UserOpeningResponse, error)
 	MarkReady(ctx context.Context, in *ReadyRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
-	StreamRegistrations(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (grpc.ServerStreamingClient[RegistrationNotification], error)
+	StreamRegistrations(ctx context.Context, in *StreamRegistrationsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[RegistrationNotification], error)
 }
 
 type keyCuratorClient struct {
@@ -98,13 +98,13 @@ func (c *keyCuratorClient) MarkReady(ctx context.Context, in *ReadyRequest, opts
 	return out, nil
 }
 
-func (c *keyCuratorClient) StreamRegistrations(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (grpc.ServerStreamingClient[RegistrationNotification], error) {
+func (c *keyCuratorClient) StreamRegistrations(ctx context.Context, in *StreamRegistrationsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[RegistrationNotification], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &KeyCurator_ServiceDesc.Streams[0], KeyCurator_StreamRegistrations_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
-	x := &grpc.GenericClientStream[emptypb.Empty, RegistrationNotification]{ClientStream: stream}
+	x := &grpc.GenericClientStream[StreamRegistrationsRequest, RegistrationNotification]{ClientStream: stream}
 	if err := x.ClientStream.SendMsg(in); err != nil {
 		return nil, err
 	}
@@ -126,7 +126,7 @@ type KeyCuratorServer interface {
 	FetchPublicParams(context.Context, *emptypb.Empty) (*PublicParamsResponse, error)
 	RegisterUser(context.Context, *RegisterRequest) (*UserOpeningResponse, error)
 	MarkReady(context.Context, *ReadyRequest) (*emptypb.Empty, error)
-	StreamRegistrations(*emptypb.Empty, grpc.ServerStreamingServer[RegistrationNotification]) error
+	StreamRegistrations(*StreamRegistrationsRequest, grpc.ServerStreamingServer[RegistrationNotification]) error
 	mustEmbedUnimplementedKeyCuratorServer()
 }
 
@@ -152,7 +152,7 @@ func (UnimplementedKeyCuratorServer) RegisterUser(context.Context, *RegisterRequ
 func (UnimplementedKeyCuratorServer) MarkReady(context.Context, *ReadyRequest) (*emptypb.Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method MarkReady not implemented")
 }
-func (UnimplementedKeyCuratorServer) StreamRegistrations(*emptypb.Empty, grpc.ServerStreamingServer[RegistrationNotification]) error {
+func (UnimplementedKeyCuratorServer) StreamRegistrations(*StreamRegistrationsRequest, grpc.ServerStreamingServer[RegistrationNotification]) error {
 	return status.Errorf(codes.Unimplemented, "method StreamRegistrations not implemented")
 }
 func (UnimplementedKeyCuratorServer) mustEmbedUnimplementedKeyCuratorServer() {}
@@ -267,11 +267,11 @@ func _KeyCurator_MarkReady_Handler(srv interface{}, ctx context.Context, dec fun
 }
 
 func _KeyCurator_StreamRegistrations_Handler(srv interface{}, stream grpc.ServerStream) error {
-	m := new(emptypb.Empty)
+	m := new(StreamRegistrationsRequest)
 	if err := stream.RecvMsg(m); err != nil {
 		return err
 	}
-	return srv.(KeyCuratorServer).StreamRegistrations(m, &grpc.GenericServerStream[emptypb.Empty, RegistrationNotification]{ServerStream: stream})
+	return srv.(KeyCuratorServer).StreamRegistrations(m, &grpc.GenericServerStream[StreamRegistrationsRequest, RegistrationNotification]{ServerStream: stream})
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.

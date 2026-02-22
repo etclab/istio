@@ -93,8 +93,17 @@ type KeyCuratorServer struct {
 	amIReady atomic.Bool
 
 	subscribersMu sync.RWMutex
-	subscribers   map[int64]chan *pb.RegistrationNotification
-	nextSubID     int64
+	subscribers   map[int64]*subscriber // keyed by subscriber's RBE user ID
+
+	// notificationLog is an ordered log of all registration notifications.
+	// New subscribers receive unseen entries before switching to live updates.
+	notificationLogMu sync.RWMutex
+	notificationLog   []*pb.RegistrationNotification
+
+	// subscriberCursors tracks how far each subscriber (by RBE ID) has read
+	// into the notificationLog. Persists across reconnects so we don't resend.
+	subscriberCursorsMu sync.RWMutex
+	subscriberCursors   map[int64]int // rbeId -> index of last sent notification + 1
 }
 
 func (kcs *KeyCuratorServer) ListWatchRBEUsers() {
@@ -529,7 +538,8 @@ func NewKeyCuratorServer(maxUsers int, podName string) *KeyCuratorServer {
 		// pod id of istiod instance
 		leaseId:     podName,
 		logWriter:   kceval.NewMLogWriter(""),
-		subscribers: make(map[int64]chan *pb.RegistrationNotification),
+		subscribers:       make(map[int64]*subscriber),
+		subscriberCursors: make(map[int64]int),
 	}
 
 	// channel to receive signals when lease is acquired/ready and when etcd is
@@ -825,7 +835,7 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 	blockCommitment := &proto.G1{Point: kcs.kc.PP.Commitments[blockId].Bytes()}
 
 	kcs.registeredIds[id] = true
-	kcs.notifySubscribers(id)
+	kcs.notifySubscribers(id, pbProof, attestationProto, regMsg)
 	if source == "api" {
 		// only send to etcd if registering a new user via API
 		// this means only this instance of istiod received this request
@@ -915,49 +925,100 @@ func (s *KeyCuratorServer) Register(grpcServer *grpc.Server) {
 	pb.RegisterKeyCuratorServer(grpcServer, s)
 }
 
-func (kcs *KeyCuratorServer) StreamRegistrations(_ *emptypb.Empty, stream pb.KeyCurator_StreamRegistrationsServer) error {
+// subscriber represents a connected stream subscriber identified by RBE user ID.
+type subscriber struct {
+	ch chan *pb.RegistrationNotification
+}
+
+func (kcs *KeyCuratorServer) StreamRegistrations(req *pb.StreamRegistrationsRequest, stream pb.KeyCurator_StreamRegistrationsServer) error {
+	subId := req.GetSubscriberId()
+
+	// Determine how far this subscriber has already read, and subscribe atomically.
+	// notifySubscribers() holds notificationLogMu(write) while appending and fanning out,
+	// so holding notificationLogMu(read) here ensures a notification either appears in
+	// the unsent slice OR is delivered to the channel — never both, never neither.
+	kcs.notificationLogMu.RLock()
+
+	kcs.subscriberCursorsMu.RLock()
+	cursor := kcs.subscriberCursors[subId] // 0 if first time
+	kcs.subscriberCursorsMu.RUnlock()
+
+	unsent := kcs.notificationLog[cursor:]
+	newCursor := len(kcs.notificationLog)
+
 	kcs.subscribersMu.Lock()
-	id := kcs.nextSubID
-	kcs.nextSubID++
-	ch := make(chan *pb.RegistrationNotification, 64)
-	kcs.subscribers[id] = ch
+	sub := &subscriber{ch: make(chan *pb.RegistrationNotification, 64)}
+	kcs.subscribers[subId] = sub
 	kcs.subscribersMu.Unlock()
 
-	log.Infof("[dev] StreamRegistrations: subscriber %d connected", id)
+	kcs.notificationLogMu.RUnlock()
+
+	log.Infof("[dev] StreamRegistrations: subscriber rbeId=%d connected, cursor=%d, replaying %d unsent registrations",
+		subId, cursor, len(unsent))
 
 	defer func() {
 		kcs.subscribersMu.Lock()
-		delete(kcs.subscribers, id)
+		delete(kcs.subscribers, subId)
 		kcs.subscribersMu.Unlock()
-		log.Infof("[dev] StreamRegistrations: subscriber %d disconnected", id)
+		log.Infof("[dev] StreamRegistrations: subscriber rbeId=%d disconnected", subId)
 	}()
 
+	// Replay unsent notifications in order.
+	for _, notif := range unsent {
+		if err := stream.Send(notif); err != nil {
+			log.Errorf("[dev] StreamRegistrations: error replaying notification to subscriber rbeId=%d: %v", subId, err)
+			return err
+		}
+	}
+
+	// Update cursor after successful replay.
+	kcs.subscriberCursorsMu.Lock()
+	kcs.subscriberCursors[subId] = newCursor
+	kcs.subscriberCursorsMu.Unlock()
+
+	// Switch to live updates.
 	for {
 		select {
 		case <-stream.Context().Done():
 			return stream.Context().Err()
-		case notif := <-ch:
+		case notif := <-sub.ch:
 			if err := stream.Send(notif); err != nil {
+				log.Errorf("[dev] StreamRegistrations: error sending notification to subscriber rbeId=%d: %v", subId, err)
 				return err
 			}
+			// Advance cursor on each successful send.
+			kcs.subscriberCursorsMu.Lock()
+			kcs.subscriberCursors[subId]++
+			kcs.subscriberCursorsMu.Unlock()
 		}
 	}
 }
 
-func (kcs *KeyCuratorServer) notifySubscribers(id int) {
+func (kcs *KeyCuratorServer) notifySubscribers(id int, proof *proto.G1,
+	attestation *pb.CounterAttestation, registerRequestBytes []byte) {
 	notif := &pb.RegistrationNotification{
-		Message: fmt.Sprintf("registered user with id: %d", id),
-		Id:      int64(id),
+		Id:                   int64(id),
+		Proof:                proof,
+		CounterAttestation:   attestation,
+		RegisterRequestBytes: registerRequestBytes,
 	}
 
-	kcs.subscribersMu.RLock()
-	defer kcs.subscribersMu.RUnlock()
+	// Append to the log and fan out while holding the log lock.
+	// StreamRegistrations holds this same lock (read) while snapshotting
+	// and subscribing, so a notification either appears in the unsent slice
+	// OR is delivered to the channel — never both, never neither.
+	kcs.notificationLogMu.Lock()
+	kcs.notificationLog = append(kcs.notificationLog, notif)
 
-	for _, ch := range kcs.subscribers {
+	kcs.subscribersMu.RLock()
+	for _, sub := range kcs.subscribers {
 		select {
-		case ch <- notif:
+		case sub.ch <- notif:
 		default:
 			// drop if subscriber is slow
 		}
 	}
+	kcs.subscribersMu.RUnlock()
+
+	kcs.notificationLogMu.Unlock()
 }
