@@ -62,9 +62,6 @@ func (s *ExtAuthzServer) Check(_ context.Context, req *authv3.CheckRequest) (*au
 			extAuthzLog.Infof("Check: source.address=%s:%d", sa.GetAddress(), sa.GetPortValue())
 		}
 	}
-	if len(src.GetLabels()) > 0 {
-		extAuthzLog.Infof("Check: source.labels=%v", src.GetLabels())
-	}
 
 	// --- Log destination info ---
 	dst := attrs.GetDestination()
@@ -75,9 +72,6 @@ func (s *ExtAuthzServer) Check(_ context.Context, req *authv3.CheckRequest) (*au
 			extAuthzLog.Infof("Check: destination.address=%s:%d", sa.GetAddress(), sa.GetPortValue())
 		}
 	}
-	if len(dst.GetLabels()) > 0 {
-		extAuthzLog.Infof("Check: destination.labels=%v", dst.GetLabels())
-	}
 
 	// --- Log TLS session ---
 	if tls := attrs.GetTlsSession(); tls != nil {
@@ -86,20 +80,14 @@ func (s *ExtAuthzServer) Check(_ context.Context, req *authv3.CheckRequest) (*au
 		extAuthzLog.Infof("Check: tls_session=nil (is IncludeTlsSession enabled?)")
 	}
 
-	// --- Log context extensions and metadata ---
-	if len(attrs.GetContextExtensions()) > 0 {
-		extAuthzLog.Infof("Check: context_extensions=%v", attrs.GetContextExtensions())
-	}
-	if attrs.GetMetadataContext() != nil {
-		extAuthzLog.Infof("Check: metadata_context=%v", attrs.GetMetadataContext())
-	}
-
 	// --- Parse and inspect the source peer certificate ---
 	certRaw := src.GetCertificate()
+	var cert *x509.Certificate
 	if certRaw != "" {
 		extAuthzLog.Infof("Check: source.certificate present (%d bytes)", len(certRaw))
 
-		cert, err := parsePeerCertificate(certRaw)
+		var err error
+		cert, err = parsePeerCertificate(certRaw)
 		if err != nil {
 			extAuthzLog.Errorf("Check: failed to parse source certificate: %v", err)
 		} else {
@@ -118,29 +106,42 @@ func (s *ExtAuthzServer) Check(_ context.Context, req *authv3.CheckRequest) (*au
 		extAuthzLog.Infof("Check: source.certificate is empty (is IncludePeerCertificate enabled?)")
 	}
 
-	// --- RBE validation stub ---
-	// TODO: this should fail closed later, but allow until implemented.
+	// --- RBE validation ---
 	// Check if this pod's RBE identity is available (graceful startup)
 	if s.secretCache == nil || s.secretCache.GetRbeWorkload() == nil {
-		extAuthzLog.Infof("Check: RBE workload not yet available, allowing")
-		return allow(), nil
+		return deny("RBE workload not yet available, denying until ready"), nil
 	}
 	if s.secretCache.GetPublicParams() == nil {
-		extAuthzLog.Infof("Check: PublicParams not yet available, allowing")
-		return allow(), nil
+		return deny("PublicParams not yet available, denying until ready"), nil
 	}
 
-	// Check if the source user is in the registration store
-	// TODO: derive the source user's RBE ID from the request attributes
-	// (token extraction from cert SAN / context extensions / source principal — deferred)
-	//
-	// TODO: once we have the source user's RBE ID:
-	// 1. Look up the user in s.regStore.Get(otherUserId)
-	// 2. Perform CheckPodValidity()-style RBE encrypt/decrypt nonce check
-	//    - This requires commitment + opening for the other user, which are not
-	//      yet streamed. Options: derive from Xi+PublicKey, or source from
-	//      secretCache etcd-watched state, or add to the notification later.
-	extAuthzLog.Infof("Check: RBE validation not yet implemented, allowing")
+	// Fail closed: if RBE is ready but no source cert is available, deny
+	if cert == nil {
+		return deny("source certificate missing or unparseable while RBE is active"), nil
+	}
+
+	// Extract the RBE admin token from the cert's custom extension
+	token, err := extractRbeToken(cert)
+	if err != nil {
+		return deny(fmt.Sprintf("RBE token extraction failed: %v", err)), nil
+	}
+
+	// Compute the RBE user ID from the token
+	rbeId := &security.RbeId{Token: token}
+	id := int(rbeId.ToNumber())
+	extAuthzLog.Infof("Check: extracted RBE token, computed id=%d", id)
+
+	// Look up the source user in the registration store
+	reg, ok := s.regStore.Get(id)
+	if !ok {
+		return deny(fmt.Sprintf("source RBE registration not found for id=%d", id)), nil
+	}
+
+	if !reg.PodValid {
+		return deny(fmt.Sprintf("source RBE pod validation failed for id=%d", id)), nil
+	}
+
+	extAuthzLog.Infof("Check: RBE validation passed for id=%d", id)
 	return allow(), nil
 }
 
@@ -155,6 +156,20 @@ func deny(reason string) *authv3.CheckResponse {
 	return &authv3.CheckResponse{
 		Status: &status.Status{Code: int32(codes.Unauthenticated), Message: reason},
 	}
+}
+
+// AdminTokenOID is the custom X.509 extension OID used to embed the RBE admin token.
+// Matches the OID defined in secretcache.go.
+var AdminTokenOID = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 9901, 33}
+
+// extractRbeToken extracts the RBE admin token from a custom X.509 certificate extension.
+func extractRbeToken(cert *x509.Certificate) (string, error) {
+	for _, ext := range cert.Extensions {
+		if ext.Id.Equal(AdminTokenOID) {
+			return string(ext.Value), nil
+		}
+	}
+	return "", fmt.Errorf("AdminTokenOID extension %v not found in certificate", AdminTokenOID)
 }
 
 // NewExtAuthzServer creates and starts the ext_authz gRPC server on a UDS.
@@ -229,17 +244,9 @@ func parsePeerCertificate(certRaw string) (*x509.Certificate, error) {
 
 // logCertDetails logs all relevant fields and extensions from an X.509 certificate.
 func logCertDetails(cert *x509.Certificate) {
-	extAuthzLog.Infof("Check: cert.Subject=%s", cert.Subject)
-	extAuthzLog.Infof("Check: cert.Issuer=%s", cert.Issuer)
 	extAuthzLog.Infof("Check: cert.SerialNumber=%s", cert.SerialNumber)
 	extAuthzLog.Infof("Check: cert.NotBefore=%s, cert.NotAfter=%s", cert.NotBefore, cert.NotAfter)
 	extAuthzLog.Infof("Check: cert.URIs=%v", cert.URIs)
-	extAuthzLog.Infof("Check: cert.DNSNames=%v", cert.DNSNames)
-	extAuthzLog.Infof("Check: cert.IPAddresses=%v", cert.IPAddresses)
-	extAuthzLog.Infof("Check: cert.EmailAddresses=%v", cert.EmailAddresses)
-	extAuthzLog.Infof("Check: cert.IsCA=%v", cert.IsCA)
-	extAuthzLog.Infof("Check: cert.KeyUsage=%d", cert.KeyUsage)
-	extAuthzLog.Infof("Check: cert.ExtKeyUsage=%v", cert.ExtKeyUsage)
 
 	// Log all X.509 extensions (both standard and custom)
 	for _, ext := range cert.Extensions {
