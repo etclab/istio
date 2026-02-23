@@ -17,6 +17,7 @@ type UserRegistration struct {
 	ID          int
 	Proof       *bls.G1
 	Attestation *trinc.CounterAttestation
+	PodValid    bool // result of encrypt/decrypt challenge-response
 }
 
 // Store is a thread-safe map of user ID to registration data.
@@ -145,6 +146,15 @@ func (s *LocalRBEState) GetPP() *rbe.PublicParams {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.pp
+}
+
+// GetOpening returns the opening history for a given userId (thread-safe).
+// Returns a single identity element if the user hasn't been seen yet.
+func (s *LocalRBEState) GetOpening(userId int) []*bls.G1 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	blockId := s.pp.IdToBlock(userId)
+	return s.getOrInitOpening(blockId, userId)
 }
 
 // IsRegistered returns whether the given ID has been applied (thread-safe).

@@ -1,19 +1,25 @@
 package regstate
 
 import (
+	"fmt"
+	"time"
+
 	bls "github.com/cloudflare/circl/ecc/bls12381"
 	"github.com/etclab/rbe"
 	gproto "google.golang.org/protobuf/proto"
 
 	"istio.io/istio/pkg/log"
+	"istio.io/istio/pkg/security"
 	pb "istio.io/istio/security/pkg/key-curator/key-curator"
+	keycurator "istio.io/istio/security/pkg/key-curator/util"
 	trincutil "istio.io/istio/security/pkg/trinc/util"
 )
 
 var regstateLog = log.RegisterScope("regstate", "registration state verification")
 
 // VerifyAndStore verifies the counter attestation, applies the registration to
-// the local RBE state, verifies the membership proof, then stores the result.
+// the local RBE state, verifies the membership proof, runs an encrypt/decrypt
+// challenge-response, then stores the result.
 func VerifyAndStore(store *Store, rbeState *LocalRBEState, notif *pb.RegistrationNotification) bool {
 	id := int(notif.GetId())
 
@@ -34,12 +40,13 @@ func VerifyAndStore(store *Store, rbeState *LocalRBEState, notif *pb.Registratio
 		regstateLog.Infof("attestation verified for id=%d", id)
 	}
 
-	// --- Step 2: Extract publicKey and xi from the RegisterRequest ---
+	// --- Step 2: Extract publicKey, xi, and req from the RegisterRequest ---
 	var publicKey *bls.G1
 	var xi []*bls.G1
+	var req *pb.RegisterRequest
 
 	if notif.GetRegisterRequestBytes() != nil {
-		req := &pb.RegisterRequest{}
+		req = &pb.RegisterRequest{}
 		if err := gproto.Unmarshal(notif.GetRegisterRequestBytes(), req); err != nil {
 			regstateLog.Errorf("failed to unmarshal RegisterRequest for id=%d: %v", id, err)
 			return false
@@ -84,14 +91,70 @@ func VerifyAndStore(store *Store, rbeState *LocalRBEState, notif *pb.Registratio
 		regstateLog.Infof("membership verified for id=%d", id)
 	}
 
-	// --- Step 5: Store verified registration ---
-	// TODO: CheckPodValidity()-style validation goes here next
+	// --- Step 5: Challenge-response validation ---
+	podValid := false
+	if req != nil {
+		podValid = validatePodChallenge(rbeState, id, req)
+		if podValid {
+			regstateLog.Infof("pod challenge-response validated for id=%d", id)
+		} else {
+			regstateLog.Warnf("pod challenge-response failed for id=%d", id)
+		}
+	}
+
+	// --- Step 6: Store verified registration ---
 	store.Put(&UserRegistration{
 		ID:          id,
 		Proof:       proof,
 		Attestation: trincutil.AttestationFromProto(notif.GetCounterAttestation()),
+		PodValid:    podValid,
 	})
 
-	regstateLog.Infof("stored verified registration for id=%d", id)
+	regstateLog.Infof("stored verified registration for id=%d (podValid=%t)", id, podValid)
 	return true
+}
+
+// validatePodChallenge encrypts a nonce for the given user and verifies they
+// can decrypt it, proving the key binding in the commitment is correct.
+// Mirrors CheckPodValidity() in security/pkg/key-curator/util/util.go.
+func validatePodChallenge(rbeState *LocalRBEState, otherUserId int, req *pb.RegisterRequest) (result bool) {
+	// BLS crypto operations can panic on invalid inputs
+	defer func() {
+		if err := recover(); err != nil {
+			regstateLog.Errorf("[dev] panic during pod challenge for id=%d: %+v", otherUserId, err)
+		}
+	}()
+
+	pp := rbeState.GetPP()
+
+	// 1. Generate nonce and hash to Gt
+	nonce := []byte(fmt.Sprintf("%d", time.Now().Unix()))
+	nonceHash := keycurator.HashToGt(nonce)
+
+	// 2. Encrypt nonce for the other user (standalone, no User needed)
+	cipherText := rbe.Encrypt(pp, otherUserId, nonceHash)
+
+	// 3. Derive other user's secret key from ip+token
+	otherRbeId := &security.RbeId{
+		Ip:    req.GetIp(),
+		Token: req.GetToken(),
+	}
+	sk := new(bls.Scalar)
+	sk.SetUint64(uint64(otherRbeId.SecretKey()))
+
+	// 4. Create other user with the derived secret key
+	otherUser := rbe.NewUserWithSecret(pp, otherUserId, sk)
+
+	// 5. Get openings and update the other user
+	openings := rbeState.GetOpening(otherUserId)
+	otherUser.Update(pp.Commitments, openings)
+
+	// 6. Decrypt and compare
+	decryptedNonce, err := otherUser.Decrypt(cipherText)
+	if err != nil {
+		regstateLog.Errorf("[dev] failed to decrypt nonce for id=%d: %v", otherUserId, err)
+		return false
+	}
+
+	return nonceHash.IsEqual(decryptedNonce)
 }
