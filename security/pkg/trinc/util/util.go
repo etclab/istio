@@ -22,9 +22,10 @@ var (
 	loadPkOnce   sync.Once
 	loadPkErr    error
 
-	trinket     *trinc.Trinket
-	loadTkOnce  sync.Once
-	loadTkErr   error
+	// Cache the private key read from disk (no TPM slots used).
+	tpmPrivateKey *ecdsa.PrivateKey
+	loadSkOnce    sync.Once
+	loadSkErr     error
 )
 
 // returns and returns the secret key from TPM
@@ -37,29 +38,33 @@ func ReadTPMSk() {
 	log.Infof("[dev] Read TPM_SK_PATH %v", sk)
 }
 
-// loadTrinket loads the TPM private key and creates a Trinket instance.
-// It uses sync.Once to ensure the Trinket is created only once.
-func loadTrinket() (*trinc.Trinket, error) {
-	loadTkOnce.Do(func() {
-		sk, err := trinc.LoadECDSAPrivateKeyFromPEMFile(TPM_SK_PATH)
-		if err != nil {
-			loadTkErr = fmt.Errorf("can't load private key file %q: %w", TPM_SK_PATH, err)
-			return
+// loadPrivateKey reads the TPM private key from file once and caches it.
+// This is a pure file read — no TPM object slots are consumed.
+func loadPrivateKey() (*ecdsa.PrivateKey, error) {
+	loadSkOnce.Do(func() {
+		tpmPrivateKey, loadSkErr = trinc.LoadECDSAPrivateKeyFromPEMFile(TPM_SK_PATH)
+		if loadSkErr != nil {
+			loadSkErr = fmt.Errorf("can't load private key file %q: %w", TPM_SK_PATH, loadSkErr)
 		}
-		trinket, loadTkErr = trinc.NewTrinket(DefaultTPMDevPath, sk)
 	})
-	return trinket, loadTkErr
+	return tpmPrivateKey, loadSkErr
 }
 
 func DoAttestCounter(msg []byte) (attestation *trinc.CounterAttestation, err error) {
-	// msgHash is simply sha256 hash of message bytes
 	msgHash := sha256.Sum256(msg)
 
-	tk, err := loadTrinket()
+	sk, err := loadPrivateKey()
+	if err != nil {
+		log.Errorf("[dev] error: can't load private key: %v", err)
+		return nil, err
+	}
+
+	tk, err := trinc.NewTrinket(DefaultTPMDevPath, sk)
 	if err != nil {
 		log.Errorf("[dev] error: can't initialize trinket: %v", err)
 		return nil, err
 	}
+	defer tk.Close()
 
 	attestation, err = tk.AttestCounter(msgHash[:])
 	if err != nil {

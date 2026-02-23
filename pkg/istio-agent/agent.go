@@ -429,6 +429,12 @@ func (a *Agent) Run(ctx context.Context) (func(), error) {
 	a.regStore = regstate.NewStore()
 	a.extAuthzServer = extauthz.NewExtAuthzServer(a.regStore, a.secretCache)
 
+	// Initialize local RBE state for agent-side proof verification.
+	rbeState, rbeStateErr := regstate.NewLocalRBEState()
+	if rbeStateErr != nil {
+		log.Errorf("[dev] failed to init local RBE state: %v", rbeStateErr)
+	}
+
 	// Start KC registration stream in background with reconnect.
 	// Compute our RBE ID to identify ourselves to the server for cursor tracking.
 	if kcConcrete, ok := a.secretCache.GetKCClientConcrete().(*kcclient.KCClient); ok {
@@ -441,12 +447,11 @@ func (a *Agent) Run(ctx context.Context) (func(), error) {
 			for {
 				log.Infof("[dev] Starting KC StreamRegistrations (subscriberId=%d)", subscriberId)
 				err := kcConcrete.StreamRegistrations(ctx, subscriberId, func(notif *pb.RegistrationNotification) {
-					pp := a.secretCache.GetPublicParams()
-					if pp == nil {
-						log.Warnf("[dev] PublicParams not yet available, skipping verification for id=%d", notif.GetId())
+					if rbeState == nil {
+						log.Warnf("[dev] LocalRBEState not available, skipping id=%d", notif.GetId())
 						return
 					}
-					if !regstate.VerifyAndStore(a.regStore, pp, notif) {
+					if !regstate.VerifyAndStore(a.regStore, rbeState, notif) {
 						log.Errorf("[dev] verification failed for registration id=%d", notif.GetId())
 					}
 				})
