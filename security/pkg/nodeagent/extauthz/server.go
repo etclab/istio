@@ -23,6 +23,10 @@ import (
 	"istio.io/istio/pkg/security"
 	"istio.io/istio/pkg/uds"
 	"istio.io/istio/security/pkg/nodeagent/regstate"
+	authenticationv1 "k8s.io/api/authentication/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 
 	"github.com/etclab/rbe"
 )
@@ -47,6 +51,7 @@ type ExtAuthzServer struct {
 	stopped     *atomic.Bool
 	regStore    *regstate.Store
 	secretCache SecretCacheReader
+	kubeClient  kubernetes.Interface
 }
 
 // Check implements the envoy ext_authz v3 AuthorizationServer interface.
@@ -126,6 +131,12 @@ func (s *ExtAuthzServer) Check(_ context.Context, req *authv3.CheckRequest) (*au
 		return deny(fmt.Sprintf("RBE token extraction failed: %v", err)), nil
 	}
 
+	// Verify the token via the Kubernetes TokenReview API (in parallel with RBE checks)
+	tokenErrCh := make(chan error, 1)
+	go func() {
+		tokenErrCh <- s.verifyToken(context.Background(), token)
+	}()
+
 	// Compute the RBE user ID from the token
 	rbeId := &security.RbeId{Token: token}
 	id := int(rbeId.ToNumber())
@@ -139,6 +150,11 @@ func (s *ExtAuthzServer) Check(_ context.Context, req *authv3.CheckRequest) (*au
 
 	if !reg.PodValid {
 		return deny(fmt.Sprintf("source RBE pod validation failed for id=%d", id)), nil
+	}
+
+	// Wait for TokenReview result before allowing
+	if err := <-tokenErrCh; err != nil {
+		return deny(fmt.Sprintf("token verification failed: %v", err)), nil
 	}
 
 	extAuthzLog.Infof("Check: RBE validation passed for id=%d", id)
@@ -172,18 +188,58 @@ func extractRbeToken(cert *x509.Certificate) (string, error) {
 	return "", fmt.Errorf("AdminTokenOID extension %v not found in certificate", AdminTokenOID)
 }
 
+// verifyToken calls the Kubernetes TokenReview API to verify a service account token.
+// Returns nil if the token is valid (Authenticated == true), or an error otherwise.
+func (s *ExtAuthzServer) verifyToken(ctx context.Context, token string) error {
+	if s.kubeClient == nil {
+		return fmt.Errorf("kubernetes client not available")
+	}
+
+	tokenReview := &authenticationv1.TokenReview{
+		Spec: authenticationv1.TokenReviewSpec{
+			Token: token,
+		},
+	}
+
+	result, err := s.kubeClient.AuthenticationV1().TokenReviews().Create(ctx, tokenReview, metav1.CreateOptions{})
+	if err != nil {
+		return fmt.Errorf("TokenReview API call failed: %w", err)
+	}
+
+	if !result.Status.Authenticated {
+		return fmt.Errorf("token not authenticated (error=%q)", result.Status.Error)
+	}
+
+	extAuthzLog.Infof("Check: TokenReview passed for user=%q", result.Status.User.Username)
+	return nil
+}
+
 // NewExtAuthzServer creates and starts the ext_authz gRPC server on a UDS.
 func NewExtAuthzServer(store *regstate.Store, sc SecretCacheReader) *ExtAuthzServer {
+	// Create a kubernetes client for TokenReview API calls.
+	var kubeClient kubernetes.Interface
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		extAuthzLog.Errorf("failed to get in-cluster config for TokenReview: %v", err)
+	} else {
+		clientset, err := kubernetes.NewForConfig(config)
+		if err != nil {
+			extAuthzLog.Errorf("failed to create kubernetes client for TokenReview: %v", err)
+		} else {
+			kubeClient = clientset
+		}
+	}
+
 	s := &ExtAuthzServer{
 		stopped:     atomic.NewBool(false),
 		regStore:    store,
 		secretCache: sc,
+		kubeClient:  kubeClient,
 	}
 
 	s.grpcServer = grpc.NewServer()
 	authv3.RegisterAuthorizationServer(s.grpcServer, s)
 
-	var err error
 	s.listener, err = uds.NewListener(socketPath)
 
 	go func() {

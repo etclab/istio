@@ -18,14 +18,8 @@ const TPM_PK_PATH = "/etc/tpm-keys/publicKey"
 const DefaultTPMDevPath = "/dev/tpmrm0"
 
 var (
-	tpmPublicKey *ecdsa.PublicKey
-	loadPkOnce   sync.Once
-	loadPkErr    error
-
-	// Cache the private key read from disk (no TPM slots used).
-	tpmPrivateKey *ecdsa.PrivateKey
-	loadSkOnce    sync.Once
-	loadSkErr     error
+	trinketInstance *trinc.Trinket
+	trinketMu       sync.Mutex
 )
 
 // returns and returns the secret key from TPM
@@ -38,33 +32,38 @@ func ReadTPMSk() {
 	log.Infof("[dev] Read TPM_SK_PATH %v", sk)
 }
 
-// loadPrivateKey reads the TPM private key from file once and caches it.
-// This is a pure file read — no TPM object slots are consumed.
-func loadPrivateKey() (*ecdsa.PrivateKey, error) {
-	loadSkOnce.Do(func() {
-		tpmPrivateKey, loadSkErr = trinc.LoadECDSAPrivateKeyFromPEMFile(TPM_SK_PATH)
-		if loadSkErr != nil {
-			loadSkErr = fmt.Errorf("can't load private key file %q: %w", TPM_SK_PATH, loadSkErr)
-		}
-	})
-	return tpmPrivateKey, loadSkErr
+// getTrinket returns the singleton Trinket, creating it on first call.
+// Caller must hold trinketMu. Unlike sync.Once, if initialization fails
+// it will be retried on the next call.
+func getTrinket() (*trinc.Trinket, error) {
+	if trinketInstance != nil {
+		return trinketInstance, nil
+	}
+
+	sk, err := trinc.LoadECDSAPrivateKeyFromPEMFile(TPM_SK_PATH)
+	if err != nil {
+		return nil, fmt.Errorf("can't load private key file %q: %w", TPM_SK_PATH, err)
+	}
+
+	tk, err := trinc.NewTrinket(DefaultTPMDevPath, sk)
+	if err != nil {
+		return nil, fmt.Errorf("can't initialize trinket: %w", err)
+	}
+	trinketInstance = tk
+	return trinketInstance, nil
 }
 
 func DoAttestCounter(msg []byte) (attestation *trinc.CounterAttestation, err error) {
 	msgHash := sha256.Sum256(msg)
 
-	sk, err := loadPrivateKey()
-	if err != nil {
-		log.Errorf("[dev] error: can't load private key: %v", err)
-		return nil, err
-	}
+	trinketMu.Lock()
+	defer trinketMu.Unlock()
 
-	tk, err := trinc.NewTrinket(DefaultTPMDevPath, sk)
+	tk, err := getTrinket()
 	if err != nil {
-		log.Errorf("[dev] error: can't initialize trinket: %v", err)
+		log.Errorf("[dev] error: %v", err)
 		return nil, err
 	}
-	defer tk.Close()
 
 	attestation, err = tk.AttestCounter(msgHash[:])
 	if err != nil {
@@ -117,13 +116,12 @@ func AttestationFromProto(attestationPb *pb.CounterAttestation) *trinc.CounterAt
 // 	}
 // }
 
-// loadTpmPublicKey loads the TPM public key from the predefined path.
-// It uses sync.Once to ensure the file is read only once.
 func loadTpmPublicKey() (*ecdsa.PublicKey, error) {
-	loadPkOnce.Do(func() {
-		tpmPublicKey, loadPkErr = trinc.LoadECDSAPublicKeyFromPEMFile(TPM_PK_PATH)
-	})
-	return tpmPublicKey, loadPkErr
+	pk, err := trinc.LoadECDSAPublicKeyFromPEMFile(TPM_PK_PATH)
+	if err != nil {
+		return nil, fmt.Errorf("can't load public key file %q: %w", TPM_PK_PATH, err)
+	}
+	return pk, nil
 }
 
 func DoVerifyCounter(msgBytes []byte, attestation *trinc.CounterAttestation) bool {
