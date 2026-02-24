@@ -536,8 +536,8 @@ func NewKeyCuratorServer(maxUsers int, podName string) *KeyCuratorServer {
 
 		registrationQueue: make(chan UserRequest, 100),
 		// pod id of istiod instance
-		leaseId:     podName,
-		logWriter:   kceval.NewMLogWriter(""),
+		leaseId:           podName,
+		logWriter:         kceval.NewMLogWriter(""),
 		subscribers:       make(map[int64]*subscriber),
 		subscriberCursors: make(map[int64]int),
 	}

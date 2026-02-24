@@ -18,11 +18,8 @@ import (
 	gotls "crypto/tls"
 	"strings"
 
-	udpa "github.com/cncf/xds/go/udpa/type/v1"
 	core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	tls "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
-	"google.golang.org/protobuf/types/known/anypb"
-	"google.golang.org/protobuf/types/known/structpb"
 
 	networking "istio.io/api/networking/v1alpha3"
 	"istio.io/istio/pilot/pkg/model"
@@ -151,60 +148,8 @@ func ApplyToCommonTLSContext(tlsContext *tls.CommonTlsContext, proxy *model.Prox
 		matchSAN = append(matchSAN, util.StringToPrefixMatch(AppendURIPrefixToTrustDomain(trustDomainAliases))...)
 	}
 
-	rbeConfig := map[string]interface{}{
-		"pod_validity_map": map[string]interface{}{
-			"filename": "/etc/istio/proxy/pod_validity_data.json",
-		},
-	}
-
-	// rbeConfig := map[string]interface{}{
-	// 	"pod_validity_sds": map[string]interface{}{
-	// 		"name": "rbePodValidation",
-	// 		"sdsConfig": map[string]interface{}{
-	// 			"apiConfigSource": map[string]interface{}{
-	// 				"apiType":             "GRPC",
-	// 				"transportApiVersion": "V3",
-	// 				"grpcServices": []interface{}{
-	// 					map[string]interface{}{
-	// 						"envoyGrpc": map[string]interface{}{
-	// 							"clusterName": "sds-grpc",
-	// 						},
-	// 					},
-	// 				},
-	// 				"setNodeOnFirstMessageOnly": true,
-	// 			},
-	// 			// "initial_fetch_timeout": "0s",
-	// 			"resourceApiVersion": "V3",
-	// 		},
-	// 	},
-	// }
-
-	// rbeConfig := map[string]interface{}{
-	// 	"pod_validity_sds": ConstructSdsSecretConfig(model.GetOrDefault(res.GetRootResourceName(), SDSRootResourceName)),
-	// }
-
-	rbeStruct, err := structpb.NewStruct(rbeConfig)
-	if err != nil {
-		log.Errorf("[dev] Failed to create RBE struct: %v", err)
-	}
-
-	typedStruct := &udpa.TypedStruct{
-		TypeUrl: "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.RBECertValidatorConfig",
-		Value:   rbeStruct,
-	}
-
-	// see if you can pass a certificate to envoy and it is able to read it
-	// this is a normal certificate so I need to parse it with findOrCreateCertificate.. or similar method
-
-	typedStructAny, err := anypb.New(typedStruct)
-	if err != nil {
-		log.Errorf("[dev] Failed to create TypedStructAny: %v", err)
-	}
-	log.Infof("[dev] typed struct any: %v", typedStructAny)
-
 	// configure server listeners with SDS.
 	if validateClient {
-		log.Infof("[dev] inside validate client")
 		defaultValidationContext := &tls.CertificateValidationContext{
 			MatchSubjectAltNames: matchSAN,
 		}
@@ -213,17 +158,6 @@ func ApplyToCommonTLSContext(tlsContext *tls.CommonTlsContext, proxy *model.Prox
 				Specifier: &core.DataSource_Filename{
 					Filename: crl,
 				},
-			}
-		}
-
-		// log.Infof("[dev] proxy type: %v", proxy.Type)
-		// log.Infof("[dev] proxy id: %v", proxy.ID)
-		// log.Infof("[dev] proxy labels: %v", proxy.Labels)
-
-		if proxy.Type == model.SidecarProxy {
-			defaultValidationContext.CustomValidatorConfig = &core.TypedExtensionConfig{
-				Name:        "envoy.tls.cert_validator.rbe",
-				TypedConfig: typedStructAny,
 			}
 		}
 
@@ -238,38 +172,9 @@ func ApplyToCommonTLSContext(tlsContext *tls.CommonTlsContext, proxy *model.Prox
 
 	}
 
-	log.Infof("[dev] setting default and rbeIdentity for proxy: \n metadata: %v", proxy.Metadata)
-
-	if proxy.Type == model.SidecarProxy {
-		log.Infof("[dev] setting default and rbeIdentity for proxy with labels: %v", proxy.Labels)
-
-		tlsContext.TlsCertificateSdsSecretConfigs = append(tlsContext.TlsCertificateSdsSecretConfigs,
-			ConstructSdsSecretConfig("rbeIdentity"),
-		)
-		// TODO: setting multiple certificates here leads to `rbeIdentiy` being overridden
-		// tlsContext.TlsCertificateSdsSecretConfigs = []*tls.SdsSecretConfig{
-		// 	ConstructSdsSecretConfig(model.GetOrDefault(res.GetResourceName(), SDSDefaultResourceName)),``
-		// }
-	} else {
-		tlsContext.TlsCertificateSdsSecretConfigs = []*tls.SdsSecretConfig{
-			ConstructSdsSecretConfig(model.GetOrDefault(res.GetResourceName(), SDSDefaultResourceName)),
-		}
+	tlsContext.TlsCertificateSdsSecretConfigs = []*tls.SdsSecretConfig{
+		ConstructSdsSecretConfig(model.GetOrDefault(res.GetResourceName(), SDSDefaultResourceName)),
 	}
-
-	// if proxy.Type == model.SidecarProxy {
-	// 	tlsContext.TlsCertificateSdsSecretConfigs = []*tls.SdsSecretConfig{
-	// 		ConstructSdsSecretConfig(model.GetOrDefault(res.GetResourceName(), SDSDefaultResourceName)),
-	// 	}
-	// 	tlsContext.TlsCertificateSdsSecretConfigs = append(tlsContext.TlsCertificateSdsSecretConfigs,
-	// 		ConstructSdsSecretConfig("rbeIdentity"),
-	// 	)
-	// } else {
-	// 	tlsContext.TlsCertificateSdsSecretConfigs = []*tls.SdsSecretConfig{
-	// 		ConstructSdsSecretConfig(model.GetOrDefault(res.GetResourceName(), SDSDefaultResourceName)),
-	// 	}
-	// }
-
-	// log.Infof("[dev] final tls context: %+v", tlsContext)
 }
 
 // ApplyCustomSDSToClientCommonTLSContext applies the customized sds to CommonTlsContext
