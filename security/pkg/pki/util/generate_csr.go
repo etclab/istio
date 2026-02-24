@@ -105,7 +105,9 @@ func GenCSRTemplate(options CertOptions) (*x509.CertificateRequest, error) {
 				template.Subject.CommonName = cn
 			}
 		}
-		template.ExtraExtensions = []pkix.Extension{*s}
+		template.ExtraExtensions = append([]pkix.Extension{*s}, options.Extensions...)
+	} else if len(options.Extensions) > 0 {
+		template.ExtraExtensions = options.Extensions
 	}
 
 	return template, nil

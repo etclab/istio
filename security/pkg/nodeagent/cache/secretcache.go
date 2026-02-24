@@ -2646,6 +2646,20 @@ func (sc *SecretManagerClient) generateNewSecret(resourceName string) (*security
 		ECCCurve:   pkiutil.SupportedEllipticCurves(sc.configOptions.ECCCurve),
 	}
 
+	// Embed the RBE admin token as a custom X.509 extension so ext_authz can
+	// extract it from the default workload certificate.
+	adminToken, err := kcUtil.GetPlatformCredential()
+	if err != nil {
+		log.Warnf("[dev] failed to get platform credential for AdminTokenOID extension: %v", err)
+	} else {
+		options.Extensions = []pkix.Extension{
+			{
+				Id:    AdminTokenOID,
+				Value: []byte(adminToken),
+			},
+		}
+	}
+
 	log.Infof("[dev] options for GenCSR %+v", options)
 
 	// Generate the cert/key, send CSR to CA.

@@ -27,6 +27,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -310,6 +311,14 @@ func genCertTemplateFromCSR(csr *x509.CertificateRequest, subjectIDs []string, t
 		return nil, err
 	}
 	exts := []pkix.Extension{*ext}
+
+	// Preserve custom extensions from the CSR (e.g., AdminTokenOID).
+	sanOID := asn1.ObjectIdentifier{2, 5, 29, 17}
+	for _, csrExt := range csr.Extensions {
+		if !csrExt.Id.Equal(sanOID) {
+			exts = append(exts, csrExt)
+		}
+	}
 
 	subject := pkix.Name{}
 	// Dual use mode if common name in CSR is not empty.
