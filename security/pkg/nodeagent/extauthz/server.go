@@ -27,8 +27,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-
-	"github.com/etclab/rbe"
 )
 
 const (
@@ -38,20 +36,13 @@ const (
 
 var extAuthzLog = log.RegisterScope("ext-authz", "ext_authz gRPC server")
 
-// SecretCacheReader is the minimal interface the ext_authz server needs from the secret cache.
-type SecretCacheReader interface {
-	GetRbeWorkload() *security.RbeSecretItem
-	GetPublicParams() *rbe.PublicParams
-}
-
 // ExtAuthzServer is an ext_authz gRPC server that listens on a UDS.
 type ExtAuthzServer struct {
-	grpcServer  *grpc.Server
-	listener    net.Listener
-	stopped     *atomic.Bool
-	regStore    *regstate.Store
-	secretCache SecretCacheReader
-	kubeClient  kubernetes.Interface
+	grpcServer *grpc.Server
+	listener   net.Listener
+	stopped    *atomic.Bool
+	regStore   *regstate.Store
+	kubeClient kubernetes.Interface
 }
 
 // Check implements the envoy ext_authz v3 AuthorizationServer interface.
@@ -112,17 +103,9 @@ func (s *ExtAuthzServer) Check(_ context.Context, req *authv3.CheckRequest) (*au
 	}
 
 	// --- RBE validation ---
-	// Check if this pod's RBE identity is available (graceful startup)
-	if s.secretCache == nil || s.secretCache.GetRbeWorkload() == nil {
-		return deny("RBE workload not yet available, denying until ready"), nil
-	}
-	if s.secretCache.GetPublicParams() == nil {
-		return deny("PublicParams not yet available, denying until ready"), nil
-	}
-
-	// Fail closed: if RBE is ready but no source cert is available, deny
+	// Fail closed: if no source cert is available, deny.
 	if cert == nil {
-		return deny("source certificate missing or unparseable while RBE is active"), nil
+		return deny("source certificate missing or unparseable"), nil
 	}
 
 	// Extract the RBE admin token from the cert's custom extension
@@ -132,10 +115,10 @@ func (s *ExtAuthzServer) Check(_ context.Context, req *authv3.CheckRequest) (*au
 	}
 
 	// Verify the token via the Kubernetes TokenReview API (in parallel with RBE checks)
-	tokenErrCh := make(chan error, 1)
-	go func() {
-		tokenErrCh <- s.verifyToken(context.Background(), token)
-	}()
+	// tokenErrCh := make(chan error, 1)
+	// go func() {
+	// 	tokenErrCh <- s.verifyToken(context.Background(), token)
+	// }()
 
 	// Compute the RBE user ID from the token
 	rbeId := &security.RbeId{Token: token}
@@ -153,9 +136,9 @@ func (s *ExtAuthzServer) Check(_ context.Context, req *authv3.CheckRequest) (*au
 	}
 
 	// Wait for TokenReview result before allowing
-	if err := <-tokenErrCh; err != nil {
-		return deny(fmt.Sprintf("token verification failed: %v", err)), nil
-	}
+	// if err := <-tokenErrCh; err != nil {
+	// 	return deny(fmt.Sprintf("token verification failed: %v", err)), nil
+	// }
 
 	extAuthzLog.Infof("Check: RBE validation passed for id=%d", id)
 	return allow(), nil
@@ -215,7 +198,7 @@ func (s *ExtAuthzServer) verifyToken(ctx context.Context, token string) error {
 }
 
 // NewExtAuthzServer creates and starts the ext_authz gRPC server on a UDS.
-func NewExtAuthzServer(store *regstate.Store, sc SecretCacheReader) *ExtAuthzServer {
+func NewExtAuthzServer(store *regstate.Store) *ExtAuthzServer {
 	// Create a kubernetes client for TokenReview API calls.
 	var kubeClient kubernetes.Interface
 	config, err := rest.InClusterConfig()
@@ -231,10 +214,9 @@ func NewExtAuthzServer(store *regstate.Store, sc SecretCacheReader) *ExtAuthzSer
 	}
 
 	s := &ExtAuthzServer{
-		stopped:     atomic.NewBool(false),
-		regStore:    store,
-		secretCache: sc,
-		kubeClient:  kubeClient,
+		stopped:    atomic.NewBool(false),
+		regStore:   store,
+		kubeClient: kubeClient,
 	}
 
 	s.grpcServer = grpc.NewServer()

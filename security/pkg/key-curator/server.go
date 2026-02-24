@@ -933,6 +933,31 @@ type subscriber struct {
 func (kcs *KeyCuratorServer) StreamRegistrations(req *pb.StreamRegistrationsRequest, stream pb.KeyCurator_StreamRegistrationsServer) error {
 	subId := req.GetSubscriberId()
 
+	// If the request carries a RegisterRequest, process it synchronously before
+	// taking the cursor snapshot. This ensures the caller's own registration
+	// notification appears in the replay batch.
+	if regReq := req.GetRegisterRequest(); regReq != nil {
+		id := int(regReq.GetId())
+		if _, registered := kcs.registeredIds[id]; !registered {
+			userReq := UserRequest{
+				id:           id,
+				req:          regReq,
+				source:       "api",
+				registerTime: time.Now().UnixMicro(),
+				respChan:     make(chan *pb.UserOpeningResponse, 1),
+			}
+			kcs.registrationQueue <- userReq
+			resp := <-userReq.respChan
+			close(userReq.respChan)
+			if resp == nil {
+				return fmt.Errorf("registration failed for user %d", id)
+			}
+			log.Infof("[dev] StreamRegistrations: registered user %d before starting stream", id)
+		} else {
+			log.Infof("[dev] StreamRegistrations: user %d already registered, skipping", id)
+		}
+	}
+
 	// Determine how far this subscriber has already read, and subscribe atomically.
 	// notifySubscribers() holds notificationLogMu(write) while appending and fanning out,
 	// so holding notificationLogMu(read) here ensures a notification either appears in

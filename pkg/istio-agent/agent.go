@@ -26,6 +26,8 @@ import (
 	"sync"
 	"time"
 
+	bls "github.com/cloudflare/circl/ecc/bls12381"
+	"github.com/etclab/rbe"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
@@ -364,11 +366,6 @@ func (a *Agent) initializeEnvoyAgent(_ context.Context) error {
 	return nil
 }
 
-// figure out the args and return types
-func registerWorkloadAtKeyCurator() {
-
-}
-
 // Run is a non-blocking call which returns either an error or a function to await for completion.
 func (a *Agent) Run(ctx context.Context) (func(), error) {
 	var err error
@@ -427,7 +424,7 @@ func (a *Agent) Run(ctx context.Context) (func(), error) {
 	}
 	// Create shared registration state store and start ext_authz server
 	a.regStore = regstate.NewStore()
-	a.extAuthzServer = extauthz.NewExtAuthzServer(a.regStore, a.secretCache)
+	a.extAuthzServer = extauthz.NewExtAuthzServer(a.regStore)
 
 	// Initialize local RBE state for agent-side proof verification.
 	rbeState, rbeStateErr := regstate.NewLocalRBEState()
@@ -437,18 +434,31 @@ func (a *Agent) Run(ctx context.Context) (func(), error) {
 
 	// Start KC registration stream in background with reconnect.
 	// Compute our RBE ID to identify ourselves to the server for cursor tracking.
+	// If we have local RBE state (public params), build the registration request
+	// so the KC registers us inline before streaming begins.
 	if kcConcrete, ok := a.secretCache.GetKCClientConcrete().(*kcclient.KCClient); ok {
 		rbeId, rbeIdErr := a.getRbeUserId()
 		var subscriberId int64
+		var regReq *pb.RegisterRequest
+
 		if rbeIdErr == nil {
 			subscriberId = rbeId.ToNumber()
+
+			// Build the RBE user and registration request from local public params.
+			if rbeState != nil {
+				pp := rbeState.GetPP()
+				sk := new(bls.Scalar)
+				sk.SetUint64(uint64(rbeId.SecretKey()))
+				user := rbe.NewUserWithSecret(pp, int(subscriberId), sk)
+				regReq = kcclient.BuildRegisterRequest(user, rbeId)
+			}
 		}
+
 		go func() {
 			for {
 				log.Infof("[dev] Starting KC StreamRegistrations (subscriberId=%d)", subscriberId)
-				err := kcConcrete.StreamRegistrations(ctx, subscriberId, func(notif *pb.RegistrationNotification) {
+				err := kcConcrete.StreamRegistrations(ctx, subscriberId, regReq, func(notif *pb.RegistrationNotification) {
 					if rbeState == nil {
-						log.Warnf("[dev] LocalRBEState not available, skipping id=%d", notif.GetId())
 						return
 					}
 					if !regstate.VerifyAndStore(a.regStore, rbeState, notif) {
@@ -458,6 +468,8 @@ func (a *Agent) Run(ctx context.Context) (func(), error) {
 				if ctx.Err() != nil {
 					return
 				}
+				// On reconnect, don't re-register (server tracks registeredIds).
+				regReq = nil
 				log.Warnf("[dev] KC StreamRegistrations disconnected: %v, reconnecting in 5s", err)
 				time.Sleep(5 * time.Second)
 			}
@@ -602,42 +614,45 @@ func (a *Agent) initSdsServer() error {
 		a.secretCache.RegisterSecretHandler(a.sdsServer.OnSecretUpdate)
 	}
 
-	// model.Router is for ingress gateway
-	if a.cfg.ProxyType == model.SidecarProxy || a.cfg.ProxyType == model.Router {
-		go func() {
-			a.secretCache.GetWatchRegisteredUsers()
-			a.secretCache.GetWatchSystemParams()
-			go a.secretCache.UpdatePodValidationWithOpening()
-			go a.secretCache.UpdatePodValidationWithUser()
-			go a.secretCache.VerifyRegisteredUser()
+	/*
+		// model.Router is for ingress gateway
+		if a.cfg.ProxyType == model.SidecarProxy || a.cfg.ProxyType == model.Router {
+			go func() {
+				a.secretCache.GetWatchRegisteredUsers()
+				a.secretCache.GetWatchSystemParams()
+				go a.secretCache.UpdatePodValidationWithOpening()
+				go a.secretCache.UpdatePodValidationWithUser()
+				go a.secretCache.VerifyRegisteredUser()
 
-			// wait until all users before you have processed your updates
-			// a.readyChan <- true
+				// wait until all users before you have processed your updates
+				// a.readyChan <- true
 
-			// TODO: enable this to renew certificates before they expire
-			// TODO: how would you handle unregistering ids from key curator?
-			// TODO: think about storing all these information in a filename
-			// TODO: so that it can be readily accessed/picked up
-			a.secretCache.RegisterRbeSecretHandler(func(resourceName string) {
-				_, _ = a.getWorkloadRbeCerts(a.secretCache, true)
-			})
-			// register id for the first time
-			_, _ = a.getWorkloadRbeCerts(a.secretCache, false)
+				// TODO: enable this to renew certificates before they expire
+				// TODO: how would you handle unregistering ids from key curator?
+				// TODO: think about storing all these information in a filename
+				// TODO: so that it can be readily accessed/picked up
+				a.secretCache.RegisterRbeSecretHandler(func(resourceName string) {
+					_, _ = a.getWorkloadRbeCerts(a.secretCache, true)
+				})
+				// register id for the first time
+				_, _ = a.getWorkloadRbeCerts(a.secretCache, false)
 
-			// a.secretCache.RegisterRbeUpdateHandler(func(resourceName string) {
-			// 	a.secretCache.UpdateUserOpenings()
-			// })
-			// a.secretCache.UpdateUserOpenings()
-		}()
-	} else {
-		a.readyChan <- true
-		a.areOthersReadyChan <- true
-	}
+				// a.secretCache.RegisterRbeUpdateHandler(func(resourceName string) {
+				// 	a.secretCache.UpdateUserOpenings()
+				// })
+				// a.secretCache.UpdateUserOpenings()
+			}()
+		} else {
+			a.readyChan <- true
+			a.areOthersReadyChan <- true
+		}
 
-	// wait until all the services (within your block) before you have processed
-	// your update
-	<-a.readyChan
-	<-a.areOthersReadyChan
+		// wait until all the services (within your block) before you have processed
+		// your update
+		<-a.readyChan
+		<-a.areOthersReadyChan
+
+	*/
 
 	return nil
 }

@@ -99,6 +99,7 @@ message ECDSASignature {
 
 message StreamRegistrationsRequest {
     int64 subscriberId = 1;  // the subscriber's own RBE user ID
+    RegisterRequest registerRequest = 2;  // optional: register before streaming
 }
 
 message RegistrationNotification {

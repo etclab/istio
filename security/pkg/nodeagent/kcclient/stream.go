@@ -16,9 +16,11 @@ type RegistrationHandler func(notif *pb.RegistrationNotification)
 // own RBE user ID, used by the server to track what has already been sent and avoid
 // duplicates on reconnect. If handler is nil, the notification is only logged.
 // It blocks until the stream ends or the context is cancelled.
-func (c *KCClient) StreamRegistrations(ctx context.Context, subscriberId int64, handler RegistrationHandler) error {
+func (c *KCClient) StreamRegistrations(ctx context.Context, subscriberId int64,
+	registerRequest *pb.RegisterRequest, handler RegistrationHandler) error {
 	stream, err := c.client.StreamRegistrations(ctx, &pb.StreamRegistrationsRequest{
-		SubscriberId: subscriberId,
+		SubscriberId:    subscriberId,
+		RegisterRequest: registerRequest,
 	})
 	if err != nil {
 		return err

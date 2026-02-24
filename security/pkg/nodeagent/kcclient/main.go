@@ -252,11 +252,11 @@ func parseUserRegistrationResponse(uoResp *pb.UserOpeningResponse) (*bls.G1,
 	return commitment, opening, attestation, proof
 }
 
-// return values: commitments, opening, user-ids-before-me, error
-func (c *KCClient) RegisterUser(user *rbe.User, rbeId *security.RbeId) (*bls.G1,
-	[]*bls.G1, *bls.G1, []int64, error) {
+// BuildRegisterRequest constructs a RegisterRequest proto from an rbe.User and
+// RbeId. This can be used both by RegisterUser (direct RPC) and by
+// StreamRegistrations (inline registration).
+func BuildRegisterRequest(user *rbe.User, rbeId *security.RbeId) *pb.RegisterRequest {
 	xi := user.Xi()
-
 	xiProto := make([]*rbeproto.G1, len(xi))
 	for i, v := range xi {
 		if v == nil {
@@ -265,16 +265,20 @@ func (c *KCClient) RegisterUser(user *rbe.User, rbeId *security.RbeId) (*bls.G1,
 			xiProto[i] = &rbeproto.G1{Point: v.Bytes()}
 		}
 	}
-
-	id := rbeId.ToNumber()
-	regReq := &pb.RegisterRequest{
-		Id:        int64(id),
+	return &pb.RegisterRequest{
+		Id:        rbeId.ToNumber(),
 		PublicKey: &rbeproto.G1{Point: user.PublicKey().Bytes()},
 		Xi:        xiProto,
 		Ip:        rbeId.Ip,
 		Port:      strconv.Itoa(rbeId.Port),
 		Token:     rbeId.Token,
 	}
+}
+
+// return values: commitments, opening, user-ids-before-me, error
+func (c *KCClient) RegisterUser(user *rbe.User, rbeId *security.RbeId) (*bls.G1,
+	[]*bls.G1, *bls.G1, []int64, error) {
+	regReq := BuildRegisterRequest(user, rbeId)
 
 	ctx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs("ClusterID", c.opts.ClusterID))
 	// register user and fetch openings
