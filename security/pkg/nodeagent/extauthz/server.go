@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/atomic"
@@ -22,6 +23,7 @@ import (
 	"istio.io/istio/pkg/log"
 	"istio.io/istio/pkg/security"
 	"istio.io/istio/pkg/uds"
+	"istio.io/istio/security/pkg/nodeagent/kcclient"
 	"istio.io/istio/security/pkg/nodeagent/regstate"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -43,6 +45,12 @@ type ExtAuthzServer struct {
 	stopped    *atomic.Bool
 	regStore   *regstate.Store
 	kubeClient kubernetes.Interface
+
+	kcClient *kcclient.KCClient      // for on-demand registration queries
+	rbeState *regstate.LocalRBEState // for verifying on-demand results
+
+	onDemandMu    sync.RWMutex
+	onDemandCache map[int]*regstate.UserRegistration // separate from regStore
 }
 
 // Check implements the envoy ext_authz v3 AuthorizationServer interface.
@@ -128,7 +136,11 @@ func (s *ExtAuthzServer) Check(_ context.Context, req *authv3.CheckRequest) (*au
 	// Look up the source user in the registration store
 	reg, ok := s.regStore.Get(id)
 	if !ok {
-		return deny(fmt.Sprintf("source RBE registration not found for id=%d", id)), nil
+		// Fallback: query KC directly and cache the result
+		reg, ok = s.fetchAndCacheRegistration(id)
+		if !ok {
+			return deny(fmt.Sprintf("source RBE registration not found for id=%d", id)), nil
+		}
 	}
 
 	if !reg.PodValid {
@@ -197,8 +209,58 @@ func (s *ExtAuthzServer) verifyToken(ctx context.Context, token string) error {
 	return nil
 }
 
+// fetchAndCacheRegistration queries the KC for a registration and caches the result.
+// Returns the UserRegistration and true if successful, nil and false otherwise.
+func (s *ExtAuthzServer) fetchAndCacheRegistration(id int) (*regstate.UserRegistration, bool) {
+	// Check on-demand cache first
+	s.onDemandMu.RLock()
+	if reg, ok := s.onDemandCache[id]; ok {
+		s.onDemandMu.RUnlock()
+		extAuthzLog.Infof("[dev] on-demand cache hit for id=%d", id)
+		return reg, true
+	}
+	s.onDemandMu.RUnlock()
+
+	if s.kcClient == nil || s.rbeState == nil {
+		extAuthzLog.Infof("[dev] on-demand fallback unavailable (kcClient=%v, rbeState=%v)", s.kcClient != nil, s.rbeState != nil)
+		return nil, false
+	}
+
+	extAuthzLog.Infof("[dev] on-demand fetch for id=%d", id)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	notif, err := s.kcClient.FetchRegistration(ctx, int64(id))
+	if err != nil {
+		extAuthzLog.Errorf("[dev] on-demand FetchRegistration failed for id=%d: %v", id, err)
+		return nil, false
+	}
+
+	// TODO: edge cases when fetching and validating the user registration
+	// TODO: details out-of-order?
+	// Verify and build registration using the same logic as the stream path
+	if !regstate.VerifyAndStore(s.regStore, s.rbeState, notif) {
+		extAuthzLog.Errorf("[dev] on-demand verification failed for id=%d", id)
+		return nil, false
+	}
+
+	// VerifyAndStore already put it in regStore; also cache in onDemandCache
+	reg, ok := s.regStore.Get(id)
+	if !ok {
+		return nil, false
+	}
+
+	s.onDemandMu.Lock()
+	s.onDemandCache[id] = reg
+	s.onDemandMu.Unlock()
+
+	extAuthzLog.Infof("[dev] on-demand fetch and verification succeeded for id=%d", id)
+	return reg, true
+}
+
 // NewExtAuthzServer creates and starts the ext_authz gRPC server on a UDS.
-func NewExtAuthzServer(store *regstate.Store) *ExtAuthzServer {
+func NewExtAuthzServer(store *regstate.Store, kcCl *kcclient.KCClient, rbeState *regstate.LocalRBEState) *ExtAuthzServer {
 	// Create a kubernetes client for TokenReview API calls.
 	var kubeClient kubernetes.Interface
 	config, err := rest.InClusterConfig()
@@ -214,9 +276,12 @@ func NewExtAuthzServer(store *regstate.Store) *ExtAuthzServer {
 	}
 
 	s := &ExtAuthzServer{
-		stopped:    atomic.NewBool(false),
-		regStore:   store,
-		kubeClient: kubeClient,
+		stopped:       atomic.NewBool(false),
+		regStore:      store,
+		kubeClient:    kubeClient,
+		kcClient:      kcCl,
+		rbeState:      rbeState,
+		onDemandCache: make(map[int]*regstate.UserRegistration),
 	}
 
 	s.grpcServer = grpc.NewServer()

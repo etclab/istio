@@ -26,6 +26,7 @@ const (
 	KeyCurator_RegisterUser_FullMethodName        = "/keycurator.KeyCurator/RegisterUser"
 	KeyCurator_MarkReady_FullMethodName           = "/keycurator.KeyCurator/MarkReady"
 	KeyCurator_StreamRegistrations_FullMethodName = "/keycurator.KeyCurator/StreamRegistrations"
+	KeyCurator_FetchRegistration_FullMethodName   = "/keycurator.KeyCurator/FetchRegistration"
 )
 
 // KeyCuratorClient is the client API for KeyCurator service.
@@ -38,6 +39,7 @@ type KeyCuratorClient interface {
 	RegisterUser(ctx context.Context, in *RegisterRequest, opts ...grpc.CallOption) (*UserOpeningResponse, error)
 	MarkReady(ctx context.Context, in *ReadyRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	StreamRegistrations(ctx context.Context, in *StreamRegistrationsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[RegistrationNotification], error)
+	FetchRegistration(ctx context.Context, in *FetchRegistrationRequest, opts ...grpc.CallOption) (*RegistrationNotification, error)
 }
 
 type keyCuratorClient struct {
@@ -117,6 +119,16 @@ func (c *keyCuratorClient) StreamRegistrations(ctx context.Context, in *StreamRe
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type KeyCurator_StreamRegistrationsClient = grpc.ServerStreamingClient[RegistrationNotification]
 
+func (c *keyCuratorClient) FetchRegistration(ctx context.Context, in *FetchRegistrationRequest, opts ...grpc.CallOption) (*RegistrationNotification, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RegistrationNotification)
+	err := c.cc.Invoke(ctx, KeyCurator_FetchRegistration_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // KeyCuratorServer is the server API for KeyCurator service.
 // All implementations must embed UnimplementedKeyCuratorServer
 // for forward compatibility.
@@ -127,6 +139,7 @@ type KeyCuratorServer interface {
 	RegisterUser(context.Context, *RegisterRequest) (*UserOpeningResponse, error)
 	MarkReady(context.Context, *ReadyRequest) (*emptypb.Empty, error)
 	StreamRegistrations(*StreamRegistrationsRequest, grpc.ServerStreamingServer[RegistrationNotification]) error
+	FetchRegistration(context.Context, *FetchRegistrationRequest) (*RegistrationNotification, error)
 	mustEmbedUnimplementedKeyCuratorServer()
 }
 
@@ -154,6 +167,9 @@ func (UnimplementedKeyCuratorServer) MarkReady(context.Context, *ReadyRequest) (
 }
 func (UnimplementedKeyCuratorServer) StreamRegistrations(*StreamRegistrationsRequest, grpc.ServerStreamingServer[RegistrationNotification]) error {
 	return status.Errorf(codes.Unimplemented, "method StreamRegistrations not implemented")
+}
+func (UnimplementedKeyCuratorServer) FetchRegistration(context.Context, *FetchRegistrationRequest) (*RegistrationNotification, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method FetchRegistration not implemented")
 }
 func (UnimplementedKeyCuratorServer) mustEmbedUnimplementedKeyCuratorServer() {}
 func (UnimplementedKeyCuratorServer) testEmbeddedByValue()                    {}
@@ -277,6 +293,24 @@ func _KeyCurator_StreamRegistrations_Handler(srv interface{}, stream grpc.Server
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type KeyCurator_StreamRegistrationsServer = grpc.ServerStreamingServer[RegistrationNotification]
 
+func _KeyCurator_FetchRegistration_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FetchRegistrationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KeyCuratorServer).FetchRegistration(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KeyCurator_FetchRegistration_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KeyCuratorServer).FetchRegistration(ctx, req.(*FetchRegistrationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // KeyCurator_ServiceDesc is the grpc.ServiceDesc for KeyCurator service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -303,6 +337,10 @@ var KeyCurator_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "MarkReady",
 			Handler:    _KeyCurator_MarkReady_Handler,
+		},
+		{
+			MethodName: "FetchRegistration",
+			Handler:    _KeyCurator_FetchRegistration_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

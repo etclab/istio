@@ -14,6 +14,11 @@ service KeyCurator {
     rpc RegisterUser(RegisterRequest) returns (UserOpeningResponse) {}
     rpc MarkReady(ReadyRequest) returns (google.protobuf.Empty) {}
     rpc StreamRegistrations(StreamRegistrationsRequest) returns (stream RegistrationNotification) {}
+    rpc FetchRegistration(FetchRegistrationRequest) returns (RegistrationNotification) {}
+}
+
+message FetchRegistrationRequest {
+    int64 id = 1;
 }
 
 message ReadyRequest {

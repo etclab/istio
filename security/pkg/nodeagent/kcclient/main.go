@@ -314,6 +314,14 @@ func (c *KCClient) RegisterUser(user *rbe.User, rbeId *security.RbeId) (*bls.G1,
 	return commitment, opening, proof, userIdsBeforeMe, nil
 }
 
+func (c *KCClient) FetchRegistration(ctx context.Context, id int64) (*pb.RegistrationNotification, error) {
+	resp, err := c.client.FetchRegistration(ctx, &pb.FetchRegistrationRequest{Id: id})
+	if err != nil {
+		return nil, fmt.Errorf("FetchRegistration for id=%d: %w", id, err)
+	}
+	return resp, nil
+}
+
 func (c *KCClient) FetchPublicParams() (*rbe.PublicParams, error) {
 	ctx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs("ClusterID", c.opts.ClusterID))
 	ppr, err := c.client.FetchPublicParams(ctx, &emptypb.Empty{})

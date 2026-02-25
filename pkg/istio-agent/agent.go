@@ -422,21 +422,28 @@ func (a *Agent) Run(ctx context.Context) (func(), error) {
 			return nil, fmt.Errorf("failed to start default Istio SDS server: %v", err)
 		}
 	}
-	// Create shared registration state store and start ext_authz server
-	a.regStore = regstate.NewStore()
-	a.extAuthzServer = extauthz.NewExtAuthzServer(a.regStore)
-
 	// Initialize local RBE state for agent-side proof verification.
 	rbeState, rbeStateErr := regstate.NewLocalRBEState()
 	if rbeStateErr != nil {
 		log.Errorf("[dev] failed to init local RBE state: %v", rbeStateErr)
 	}
 
+	// Extract concrete KC client for on-demand queries and streaming.
+	var kcConcrete *kcclient.KCClient
+	if kc, ok := a.secretCache.GetKCClientConcrete().(*kcclient.KCClient); ok {
+		kcConcrete = kc
+	}
+
+	// Create shared registration state store and start ext_authz server.
+	// Pass KC client and rbeState so ext_authz can do on-demand fallback queries.
+	a.regStore = regstate.NewStore()
+	a.extAuthzServer = extauthz.NewExtAuthzServer(a.regStore, kcConcrete, rbeState)
+
 	// Start KC registration stream in background with reconnect.
 	// Compute our RBE ID to identify ourselves to the server for cursor tracking.
 	// If we have local RBE state (public params), build the registration request
 	// so the KC registers us inline before streaming begins.
-	if kcConcrete, ok := a.secretCache.GetKCClientConcrete().(*kcclient.KCClient); ok {
+	if kcConcrete != nil {
 		rbeId, rbeIdErr := a.getRbeUserId()
 		var subscriberId int64
 		var regReq *pb.RegisterRequest
