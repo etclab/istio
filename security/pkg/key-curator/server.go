@@ -57,16 +57,6 @@ type RegistrationEvent struct {
 	counterAttestation *trinc.CounterAttestation
 }
 
-// TODO: rename this to something more meaningful
-type UserRequest struct {
-	id           int
-	req          *pb.RegisterRequest
-	source       string
-	registerTime int64
-
-	respChan chan *pb.UserOpeningResponse
-}
-
 type KeyCuratorServer struct {
 	pb.UnimplementedKeyCuratorServer
 	kc *rbe.KeyCurator
@@ -79,11 +69,10 @@ type KeyCuratorServer struct {
 
 	history              []*RegistrationEvent
 	EtcdClient           *clientv3.Client
+	regMu                sync.RWMutex
 	registeredIds        map[int]bool                      // used to track registered user ids
 	attestations         map[int]*trinc.CounterAttestation // track attestations for each id
 	registrationResponse map[int]*pb.UserOpeningResponse
-
-	registrationQueue chan UserRequest
 
 	// todo: see how authenticators are used
 	Authenticators []security.Authenticator
@@ -134,8 +123,6 @@ func (kcs *KeyCuratorServer) initEtcdWithRetry(wg *sync.WaitGroup) {
 			// NOTE: do not restore system params from etcd because we're
 			// reading it from a file/configmap during startup
 			kcs.restoreSystemParams()
-
-			kcs.listenRegistrationRequests()
 
 			// get existing RBE users and then start watching for new users
 			kcs.ListWatchRBEUsers()
@@ -339,22 +326,9 @@ func (kcs *KeyCuratorServer) fetchExistingUsers() int64 {
 			}
 
 			id := int(regRequest.Id)
-			userReq := UserRequest{
-				id:       id,
-				req:      regRequest,
-				source:   "etcd",
-				respChan: make(chan *pb.UserOpeningResponse, 1),
-			}
-
-			// node agent will verify the proof and counter attestation
-
-			kcs.registrationQueue <- userReq
-
-			resp := <-userReq.respChan // wait for the response
-			close(userReq.respChan)
-			// ignore the response for now
-			if resp == nil {
-				log.Errorf("[dev] error registering user %d from etcd: %v", id, err)
+			_, regErr := kcs.registerUserUtil(id, regRequest, "etcd", 0)
+			if regErr != nil {
+				log.Errorf("[dev] error registering user %d from etcd: %v", id, regErr)
 			} else {
 				log.Infof("[dev] registered user %d from etcd", id)
 			}
@@ -416,73 +390,31 @@ func (kcs *KeyCuratorServer) watchForNewUsers(currentRevision int64) {
 						continue
 					}
 
-					_, registered := kcs.registeredIds[id]
-					if registered {
-						log.Infof("[dev] user with id %d is already registered, skipping", id)
-					} else {
-						// finally add user to your id space
-						regUserWithProofReq := &keycurator.RegisteredUserWithProof{}
-						err := json.Unmarshal([]byte(value), regUserWithProofReq)
-						if err == nil {
-							// user request
-							regRequestBytes := regUserWithProofReq.RequestBytes
-							regRequest := &pb.RegisterRequest{}
-							err := gproto.Unmarshal([]byte(regRequestBytes), regRequest)
-							if err != nil {
-								log.Errorf("[dev] error unmarshalling RegisterRequest for user %d: %v", regRequest.GetId(), err)
-								continue
-							}
-
-							userReq := UserRequest{
-								id:       id,
-								req:      regRequest,
-								source:   "etcd",
-								respChan: make(chan *pb.UserOpeningResponse, 1),
-							}
-
-							kcs.registrationQueue <- userReq
-
-							resp := <-userReq.respChan // wait for the response
-							close(userReq.respChan)
-							// ignore the response for now
-							if resp == nil {
-								log.Errorf("[dev] error registering user %d from etcd: %v", id, err)
-							} else {
-								log.Infof("[dev] registered user %d from etcd", id)
-							}
-						} else {
-							log.Infof("[dev] error unmarshalling request for user %d: %v", id, err)
+					// registerUserUtil handles the already-registered check internally.
+					regUserWithProofReq := &keycurator.RegisteredUserWithProof{}
+					err = json.Unmarshal([]byte(value), regUserWithProofReq)
+					if err == nil {
+						regRequestBytes := regUserWithProofReq.RequestBytes
+						regRequest := &pb.RegisterRequest{}
+						err := gproto.Unmarshal([]byte(regRequestBytes), regRequest)
+						if err != nil {
+							log.Errorf("[dev] error unmarshalling RegisterRequest for user %d: %v", regRequest.GetId(), err)
+							continue
 						}
+
+						_, regErr := kcs.registerUserUtil(id, regRequest, "etcd", 0)
+						if regErr != nil {
+							log.Errorf("[dev] error registering user %d from etcd: %v", id, regErr)
+						} else {
+							log.Infof("[dev] registered user %d from etcd", id)
+						}
+					} else {
+						log.Infof("[dev] error unmarshalling request for user %d: %v", id, err)
 					}
 				}
 			}
 		}
 	}
-}
-
-func (kcs *KeyCuratorServer) listenRegistrationRequests() {
-	go func() {
-		for request := range kcs.registrationQueue {
-			_, registered := kcs.registeredIds[request.id]
-			if registered {
-				log.Infof("[dev] user with id %d is already registered, skipping", request.id)
-				continue
-			}
-
-			// Process the registration request (one at a time)
-			result, err := kcs.registerUserUtil(request.id, request.req,
-				request.source, request.registerTime)
-			if err != nil {
-				log.Errorf("[dev] error processing registration request for user %d: %v", request.id, err)
-				continue
-			}
-
-			// send a response back
-			if request.respChan != nil {
-				request.respChan <- result
-			}
-		}
-	}()
 }
 
 // StoreAtEtcd sends request to etcd server to store the user id and the
@@ -534,7 +466,7 @@ func NewKeyCuratorServer(maxUsers int, podName string) *KeyCuratorServer {
 		registeredIds: registeredIds,
 		attestations:  attestations,
 
-		registrationQueue: make(chan UserRequest, 100),
+		registrationResponse: make(map[int]*pb.UserOpeningResponse),
 		// pod id of istiod instance
 		leaseId:           podName,
 		logWriter:         kceval.NewMLogWriter(""),
@@ -724,6 +656,17 @@ func (kcs *KeyCuratorServer) MarkReady(_ context.Context, in *pb.ReadyRequest) (
 
 func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 	source string, registerTime int64) (*pb.UserOpeningResponse, error) {
+	// Check-and-mark under write lock to avoid TOCTOU races.
+	kcs.regMu.Lock()
+	if kcs.registeredIds[id] {
+		resp := kcs.registrationResponse[id]
+		kcs.regMu.Unlock()
+		log.Infof("[dev] registerUserUtil: user %d already registered, returning cached response", id)
+		return resp, nil
+	}
+	kcs.registeredIds[id] = true
+	kcs.regMu.Unlock()
+
 	publicKey := new(bls.G1)
 	publicKey.SetBytes(in.GetPublicKey().GetPoint())
 
@@ -739,34 +682,12 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 	}
 
 	var usersBeforeMe []int64
-	// for registeredId := range kcs.registeredIds {
-	// 	usersBeforeMe = append(usersBeforeMe, int64(registeredId))
-	// }
 
-	// usersBeforeMeStringArr := make([]string, len(usersBeforeMe))
-	// for i, v := range usersBeforeMe {
-	// 	usersBeforeMeStringArr[i] = fmt.Sprintf("%d", v)
-	// }
-
-	// usersBeforeMeJoined := strings.Join(usersBeforeMeStringArr, "|")
-
-	// eventString := fmt.Sprintf("REGISTER,%d,%s,%d", in.GetId(),
-	// 	usersBeforeMeJoined, registerTime)
-	// the wait time a user experienced before registering can be high if many users
-	// are registering at the same time
-	// usersBeforeMeJoined, time.Now().UnixMicro())
-	// go func() {
-	// 	err := kcs.logWriter.Append(eventString)
-	// 	if err != nil {
-	// 		log.Errorf("[dev] failed to append REGISTER event for user %d: %v", in.GetId(), err)
-	// 	}
-	// }()
-
+	// RBE library handles its own per-block locking; no external lock needed.
 	registerStart := time.Now()
 	kcs.kc.RegisterUser(id, publicKey, xi)
 	log.Infof("[dev] kcs.kc.RegisterUser(%d) took %v", id, time.Since(registerStart))
 
-	//
 	isRbeProofEnabled := kcUtil.IsRbeProofEnabled()
 	isAttestationEnabled := kcUtil.IsAttestationEnabled()
 
@@ -792,7 +713,6 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 		log.Errorf("[dev] error marshalling register request: %v", err)
 	}
 
-	// var attestationProtoBytes []byte
 	var counterAttestation *trinc.CounterAttestation
 	var attestationProto *pb.CounterAttestation
 
@@ -805,12 +725,15 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 		if err != nil {
 			log.Errorf("[dev] error generating counter attestation: %v", err)
 		}
+
+		kcs.regMu.Lock()
 		kcs.attestations[id] = counterAttestation
+		kcs.regMu.Unlock()
+
 		log.Infof("[dev] counter attestation: %v", counterAttestation)
 
 		attestationProto = counterAttestationToProto(counterAttestation)
 
-		// attestationProtoBytes, err = gproto.Marshal(attestationProto)
 		_, err = gproto.Marshal(attestationProto)
 		if err != nil {
 			log.Errorf("[dev] error marshalling counter attestation: %v", err)
@@ -819,44 +742,19 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 		log.Infof("[dev] counter attestation generation is disabled")
 	}
 
-	// registeredUserWithProof := &keycurator.RegisteredUserWithProof{
-	// 	ProofBytes:       pbProofBytes,
-	// 	AttestationBytes: attestationProtoBytes,
-	// 	RequestBytes:     regMsg,
-	// }
-	//
-
-	// kcs.addToHistory(in.Token, in.Ip, in.Port, int(in.Id), publicKey, xi, in,
-	// 	source, counterAttestation)
-
-	// opening := []*proto.G1{}
 	opening := []*proto.G1{}
-	// for _, v := range kcs.kc.UserOpenings[id] {
-	// 	opening = append(opening, &proto.G1{Point: v.Bytes()})
-	// }
-
-	// blockId := kcs.kc.PP.IdToBlock(id)
-	// blockCommitment := &proto.G1{Point: kcs.kc.PP.Commitments[blockId].Bytes()}
 	blockCommitment := &proto.G1{Point: []byte{}}
 
-	kcs.registeredIds[id] = true
-	kcs.notifySubscribers(id, pbProof, attestationProto, regMsg)
-	// if source == "api" {
-	// 	// only send to etcd if registering a new user via API
-	// 	// this means only this instance of istiod received this request
-	// 	// so we need to sent it to etcd so that other instances can pick it up
-	// 	kcs.StoreAtEtcd(id, registeredUserWithProof)
-	// }
-	// // send updates on every registration
-	// if kcs.isLeader.Load() {
-	// 	log.Infof("[dev] I'm the leader, updating system params in etcd")
-	// 	kcs.UpdateSystemParamsInEtcd(id)
-	// } else {
-	// 	log.Infof("[dev] skip updating system params in etcd, not the leader")
-	// }
+	resp := &pb.UserOpeningResponse{Opening: opening, Commitment: blockCommitment,
+		CounterAttestation: attestationProto, Proof: pbProof, UsersBeforeMe: usersBeforeMe}
 
-	return &pb.UserOpeningResponse{Opening: opening, Commitment: blockCommitment,
-		CounterAttestation: attestationProto, Proof: pbProof, UsersBeforeMe: usersBeforeMe}, nil
+	kcs.regMu.Lock()
+	kcs.registrationResponse[id] = resp
+	kcs.regMu.Unlock()
+
+	kcs.notifySubscribers(id, pbProof, attestationProto, regMsg)
+
+	return resp, nil
 }
 
 func (kcs *KeyCuratorServer) UpdateSystemParamsInEtcd(id int) {
@@ -884,45 +782,16 @@ func (kcs *KeyCuratorServer) RegisterUser(_ context.Context, in *pb.RegisterRequ
 	log.Infof("[dev] received register request for user with id: %d", in.GetId())
 
 	registerTime := time.Now().UnixMicro()
-
 	id := int(in.GetId())
-	// rethink the check for registered user ids
-	_, registered := kcs.registeredIds[id]
-	if registered {
-		log.Warnf("[dev] user with id %d is already registered, returning cached response", id)
-		// return &pb.UserOpeningResponse{
-		// 	Opening:     []*proto.G1{},
-		// 	Commitments: []*proto.G1{},
-		// }, fmt.Errorf("user with id %d is already registered", id)
-		return kcs.registrationResponse[id], nil
+
+	resp, err := kcs.registerUserUtil(id, in, "api", registerTime)
+	if err != nil {
+		log.Errorf("[dev] error registering user %d from api: %v", id, err)
+		return nil, err
 	}
 
-	userReq := UserRequest{
-		id:           id,
-		req:          in,
-		source:       "api",
-		registerTime: registerTime,
-		respChan:     make(chan *pb.UserOpeningResponse, 1),
-	}
-
-	kcs.registrationQueue <- userReq
-
-	userOpeningResp := <-userReq.respChan // wait for the response
-	close(userReq.respChan)
-	if userOpeningResp == nil {
-		errMsg := fmt.Errorf("[dev] error registering user %d from api", id)
-		log.Errorf(errMsg.Error())
-		return nil, errMsg
-	} else {
-		if kcs.registrationResponse == nil {
-			kcs.registrationResponse = make(map[int]*pb.UserOpeningResponse)
-		}
-		log.Infof("[dev] caching registration response for user %d", id)
-		kcs.registrationResponse[id] = userOpeningResp
-	}
 	log.Infof("[dev] registered user %d from api", id)
-
-	return userOpeningResp, nil
+	return resp, nil
 }
 
 // Register registers a GRPC server on the specified port.
@@ -943,24 +812,11 @@ func (kcs *KeyCuratorServer) StreamRegistrations(req *pb.StreamRegistrationsRequ
 	// notification appears in the replay batch.
 	if regReq := req.GetRegisterRequest(); regReq != nil {
 		id := int(regReq.GetId())
-		if _, registered := kcs.registeredIds[id]; !registered {
-			userReq := UserRequest{
-				id:           id,
-				req:          regReq,
-				source:       "api",
-				registerTime: time.Now().UnixMicro(),
-				respChan:     make(chan *pb.UserOpeningResponse, 1),
-			}
-			kcs.registrationQueue <- userReq
-			resp := <-userReq.respChan
-			close(userReq.respChan)
-			if resp == nil {
-				return fmt.Errorf("registration failed for user %d", id)
-			}
-			log.Infof("[dev] StreamRegistrations: registered user %d before starting stream", id)
-		} else {
-			log.Infof("[dev] StreamRegistrations: user %d already registered, skipping", id)
+		_, err := kcs.registerUserUtil(id, regReq, "api", time.Now().UnixMicro())
+		if err != nil {
+			return fmt.Errorf("registration failed for user %d: %w", id, err)
 		}
+		log.Infof("[dev] StreamRegistrations: registered user %d before starting stream", id)
 	}
 
 	// Determine how far this subscriber has already read, and subscribe atomically.

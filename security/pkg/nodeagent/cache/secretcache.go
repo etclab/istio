@@ -2660,7 +2660,7 @@ func (sc *SecretManagerClient) generateNewSecret(resourceName string) (*security
 		}
 	}
 
-	log.Infof("[dev] options for GenCSR %+v", options)
+	// log.Infof("[dev] options for GenCSR %+v", options)
 
 	// Generate the cert/key, send CSR to CA.
 	csrPEM, keyPEM, err := pkiutil.GenCSR(options)
