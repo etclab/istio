@@ -123,10 +123,10 @@ func (s *ExtAuthzServer) Check(_ context.Context, req *authv3.CheckRequest) (*au
 	}
 
 	// Verify the token via the Kubernetes TokenReview API (in parallel with RBE checks)
-	// tokenErrCh := make(chan error, 1)
-	// go func() {
-	// 	tokenErrCh <- s.verifyToken(context.Background(), token)
-	// }()
+	tokenErrCh := make(chan error, 1)
+	go func() {
+		tokenErrCh <- s.verifyToken(context.Background(), token)
+	}()
 
 	// Compute the RBE user ID from the token
 	rbeId := &security.RbeId{Token: token}
@@ -148,9 +148,9 @@ func (s *ExtAuthzServer) Check(_ context.Context, req *authv3.CheckRequest) (*au
 	}
 
 	// Wait for TokenReview result before allowing
-	// if err := <-tokenErrCh; err != nil {
-	// 	return deny(fmt.Sprintf("token verification failed: %v", err)), nil
-	// }
+	if err := <-tokenErrCh; err != nil {
+		return deny(fmt.Sprintf("token verification failed: %v", err)), nil
+	}
 
 	extAuthzLog.Infof("Check: RBE validation passed for id=%d", id)
 	return allow(), nil

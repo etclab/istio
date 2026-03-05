@@ -670,15 +670,14 @@ func (kcs *KeyCuratorServer) registerUserUtil(id int, in *pb.RegisterRequest,
 	publicKey := new(bls.G1)
 	publicKey.SetBytes(in.GetPublicKey().GetPoint())
 
-	xi := make([]*bls.G1, len(in.GetXi()))
-	for i, v := range in.GetXi() {
+	xiProto := in.GetXi()
+	xi := make([]*bls.G1, len(xiProto))
+	for i, v := range xiProto {
 		if len(v.GetPoint()) == 0 {
-			xi[i] = nil
-		} else {
-			xg1 := new(bls.G1)
-			xg1.SetBytes(v.GetPoint())
-			xi[i] = xg1
+			continue
 		}
+		xi[i] = new(bls.G1)
+		xi[i].SetBytes(v.GetPoint())
 	}
 
 	var usersBeforeMe []int64

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -355,7 +356,11 @@ func TryParseRbePpFromFile() (*rbe.PublicParams, error) {
 	return pp, nil
 }
 
-func saveRbeParams(pp *rbe.PublicParams) (*rbe.PublicParams, error) {
+func SaveRbeParams(pp *rbe.PublicParams, outDir string) error {
+	ppOnlyFile := filepath.Join(outDir, "rbe-pp-only.txt")
+	crsH1File := filepath.Join(outDir, "rbe-crs-h1.txt")
+	crsH2File := filepath.Join(outDir, "rbe-crs-h2.txt")
+
 	// save crs h1 and h2 separately
 	crsH1 := new(rbe.CRS)
 	crsH1.H1 = pp.CRS.H1
@@ -365,13 +370,13 @@ func saveRbeParams(pp *rbe.PublicParams) (*rbe.PublicParams, error) {
 	crsH1Proto := crsH1.ToProto()
 	crsH1Bytes, err := gproto.Marshal(crsH1Proto)
 	if err != nil {
-		return nil, fmt.Errorf("could not marshal RBE CRS H1 to proto: %w", err)
+		return fmt.Errorf("could not marshal RBE CRS H1 to proto: %w", err)
 	}
-	err = os.WriteFile(RBE_PP_CRS_H1_FILE, crsH1Bytes, 0644)
+	err = os.WriteFile(crsH1File, crsH1Bytes, 0644)
 	if err != nil {
-		return nil, fmt.Errorf("could not write RBE CRS H1 to file: %w", err)
+		return fmt.Errorf("could not write RBE CRS H1 to file: %w", err)
 	}
-	log.Infof("[dev] successfully saved RBE CRS H1 to file: %s", RBE_PP_CRS_H1_FILE)
+	log.Infof("[dev] successfully saved RBE CRS H1 to file: %s", crsH1File)
 
 	crsH2 := new(rbe.CRS)
 	crsH2.H2 = pp.CRS.H2
@@ -381,13 +386,13 @@ func saveRbeParams(pp *rbe.PublicParams) (*rbe.PublicParams, error) {
 	crsH2Proto := crsH2.ToProto()
 	crsH2Bytes, err := gproto.Marshal(crsH2Proto)
 	if err != nil {
-		return nil, fmt.Errorf("could not marshal RBE CRS H2 to proto: %w", err)
+		return fmt.Errorf("could not marshal RBE CRS H2 to proto: %w", err)
 	}
-	err = os.WriteFile(RBE_PP_CRS_H2_FILE, crsH2Bytes, 0644)
+	err = os.WriteFile(crsH2File, crsH2Bytes, 0644)
 	if err != nil {
-		return nil, fmt.Errorf("could not write RBE CRS H2 to file: %w", err)
+		return fmt.Errorf("could not write RBE CRS H2 to file: %w", err)
 	}
-	log.Infof("[dev] successfully saved RBE CRS H2 to file: %s", RBE_PP_CRS_H2_FILE)
+	log.Infof("[dev] successfully saved RBE CRS H2 to file: %s", crsH2File)
 
 	ppWithoutCommitmentsAndCrs := &rbe.PublicParams{
 		MaxUsers:    pp.MaxUsers,
@@ -402,15 +407,15 @@ func saveRbeParams(pp *rbe.PublicParams) (*rbe.PublicParams, error) {
 	ppOnlyProto := ppWithoutCommitmentsAndCrs.ToProto()
 	ppOnlyBytes, err := gproto.Marshal(ppOnlyProto)
 	if err != nil {
-		return nil, fmt.Errorf("could not marshal RBE public params without commitments and crs to proto: %w", err)
+		return fmt.Errorf("could not marshal RBE public params without commitments and crs to proto: %w", err)
 	}
-	err = os.WriteFile(RBE_PP_ONLY_FILE, ppOnlyBytes, 0644)
+	err = os.WriteFile(ppOnlyFile, ppOnlyBytes, 0644)
 	if err != nil {
-		return nil, fmt.Errorf("could not write RBE public params without commitments and crs to file: %w", err)
+		return fmt.Errorf("could not write RBE public params without commitments and crs to file: %w", err)
 	}
-	log.Infof("[dev] successfully saved RBE public params without commitments and crs to file: %s", RBE_PP_ONLY_FILE)
+	log.Infof("[dev] successfully saved RBE public params without commitments and crs to file: %s", ppOnlyFile)
 
-	return nil, nil
+	return nil
 }
 
 func restoreRbePp() (*rbe.PublicParams, error) {

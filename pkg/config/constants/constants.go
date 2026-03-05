@@ -213,9 +213,7 @@ const (
 
 	EnableV2AutoAllocationLabel = "networking.istio.io/enable-autoallocate-ip"
 
-	// Max users for the key curator
-	// MaxUsers = 2147483647
-	// MaxUsers = 65536 // 2^16
-	// MaxUsers = 262144 // 2^18
-	MaxUsers = 1048576 // 2^20
+	// Max users for the key curator — matches idStringToNumber 16-bit output range.
+	// BlockSize = ceil(sqrt(65536)) = 256, giving ~255 pairings in CheckXiConsistency.
+	MaxUsers = 65536 // 2^16
 )

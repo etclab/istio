@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	bls "github.com/cloudflare/circl/ecc/bls12381"
@@ -163,6 +164,9 @@ type Agent struct {
 
 	extAuthzServer *extauthz.ExtAuthzServer
 	regStore       *regstate.Store
+
+	// rbeRegistered gates readiness until our own registration is confirmed.
+	rbeRegistered atomic.Bool
 }
 
 // AgentOptions contains additional config for the agent, not included in ProxyConfig.
@@ -443,12 +447,18 @@ func (a *Agent) Run(ctx context.Context) (func(), error) {
 	// Compute our RBE ID to identify ourselves to the server for cursor tracking.
 	// If we have local RBE state (public params), build the registration request
 	// so the KC registers us inline before streaming begins.
-	if kcConcrete != nil {
+	if kcConcrete == nil {
+		// No KC client — RBE not available, skip the readiness gate.
+		a.rbeRegistered.Store(true)
+	} else {
 		rbeId, rbeIdErr := a.getRbeUserId()
 		var subscriberId int64
 		var regReq *pb.RegisterRequest
 
-		if rbeIdErr == nil {
+		if rbeIdErr != nil {
+			// Can't compute our RBE ID — skip the readiness gate.
+			a.rbeRegistered.Store(true)
+		} else {
 			subscriberId = rbeId.ToNumber()
 
 			// Build the RBE user and registration request from local public params.
@@ -470,6 +480,13 @@ func (a *Agent) Run(ctx context.Context) (func(), error) {
 					}
 					if !regstate.VerifyAndStore(a.regStore, rbeState, notif) {
 						log.Errorf("[dev] verification failed for registration id=%d", notif.GetId())
+						return
+					}
+					if notif.GetId() == subscriberId {
+						if !a.rbeRegistered.Load() {
+							log.Infof("[dev] own RBE registration confirmed (id=%d), marking ready", subscriberId)
+							a.rbeRegistered.Store(true)
+						}
 					}
 				})
 				if ctx.Err() != nil {
@@ -783,6 +800,9 @@ func (a *Agent) generateGRPCBootstrap() error {
 
 // Check is used in to readiness check of agent to ensure DNSServer is ready.
 func (a *Agent) Check() (err error) {
+	if !a.rbeRegistered.Load() {
+		return errors.New("RBE registration not yet confirmed by Key Curator")
+	}
 	if a.isDNSServerEnabled() {
 		if !a.localDNSServer.IsReady() {
 			return errors.New("istio DNS capture is turned ON and DNS lookup table is not ready yet")
