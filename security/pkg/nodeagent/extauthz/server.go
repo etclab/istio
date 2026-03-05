@@ -2,6 +2,7 @@ package extauthz
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -34,9 +35,21 @@ import (
 const (
 	socketPath    = "./etc/istio/proxy/ext-authz.sock"
 	maxRetryTimes = 5
+
+	// tokenCacheTTL is the TTL for cached TokenReview results. Must be ≤ the
+	// smallest delay in the K8s token revocation path (~1s kubelet watch delay
+	// + terminationGracePeriodSeconds). We use 1s because the K8s control plane
+	// cannot propagate revocation faster than this.
+	tokenCacheTTL = 1 * time.Second
 )
 
 var extAuthzLog = log.RegisterScope("ext-authz", "ext_authz gRPC server")
+
+// tokenCacheEntry holds a cached TokenReview result.
+type tokenCacheEntry struct {
+	err       error
+	expiresAt time.Time
+}
 
 // ExtAuthzServer is an ext_authz gRPC server that listens on a UDS.
 type ExtAuthzServer struct {
@@ -52,6 +65,9 @@ type ExtAuthzServer struct {
 	onDemandEnabled bool // feature flag: when false, ext_authz denies unknown users
 	onDemandMu      sync.RWMutex
 	onDemandCache   map[int]*regstate.UserRegistration // separate from regStore
+
+	tokenCacheMu sync.RWMutex
+	tokenCache   map[[32]byte]tokenCacheEntry // sha256(token) -> cached result
 }
 
 // Check implements the envoy ext_authz v3 AuthorizationServer interface.
@@ -188,13 +204,39 @@ func extractRbeToken(cert *x509.Certificate) (string, error) {
 	return "", fmt.Errorf("AdminTokenOID extension %v not found in certificate", AdminTokenOID)
 }
 
-// verifyToken calls the Kubernetes TokenReview API to verify a service account token.
-// Returns nil if the token is valid (Authenticated == true), or an error otherwise.
+// verifyToken checks a cached TokenReview result first, falling back to the
+// Kubernetes TokenReview API only when the cache entry is missing or expired.
 func (s *ExtAuthzServer) verifyToken(ctx context.Context, token string) error {
 	if s.kubeClient == nil {
 		return fmt.Errorf("kubernetes client not available")
 	}
 
+	key := sha256.Sum256([]byte(token))
+
+	// Check cache under read lock.
+	s.tokenCacheMu.RLock()
+	entry, ok := s.tokenCache[key]
+	s.tokenCacheMu.RUnlock()
+
+	if ok && time.Now().Before(entry.expiresAt) {
+		return entry.err
+	}
+
+	// Cache miss or expired — call TokenReview.
+	reviewErr := s.doTokenReview(ctx, token)
+
+	s.tokenCacheMu.Lock()
+	s.tokenCache[key] = tokenCacheEntry{
+		err:       reviewErr,
+		expiresAt: time.Now().Add(tokenCacheTTL),
+	}
+	s.tokenCacheMu.Unlock()
+
+	return reviewErr
+}
+
+// doTokenReview calls the Kubernetes TokenReview API.
+func (s *ExtAuthzServer) doTokenReview(ctx context.Context, token string) error {
 	tokenReview := &authenticationv1.TokenReview{
 		Spec: authenticationv1.TokenReviewSpec{
 			Token: token,
@@ -287,6 +329,7 @@ func NewExtAuthzServer(store *regstate.Store, kcCl *kcclient.KCClient, rbeState 
 		rbeState:        rbeState,
 		onDemandEnabled: onDemandEnabled,
 		onDemandCache:   make(map[int]*regstate.UserRegistration),
+		tokenCache:      make(map[[32]byte]tokenCacheEntry),
 	}
 
 	s.grpcServer = grpc.NewServer()
