@@ -438,10 +438,13 @@ func (a *Agent) Run(ctx context.Context) (func(), error) {
 		kcConcrete = kc
 	}
 
+	// Read on-demand feature flag at startup.
+	onDemandEnabled := kcUtil.IsOnDemandEnabled()
+
 	// Create shared registration state store and start ext_authz server.
 	// Pass KC client and rbeState so ext_authz can do on-demand fallback queries.
 	a.regStore = regstate.NewStore()
-	a.extAuthzServer = extauthz.NewExtAuthzServer(a.regStore, kcConcrete, rbeState)
+	a.extAuthzServer = extauthz.NewExtAuthzServer(a.regStore, kcConcrete, rbeState, onDemandEnabled)
 
 	// Start KC registration stream in background with reconnect.
 	// Compute our RBE ID to identify ourselves to the server for cursor tracking.
@@ -474,11 +477,45 @@ func (a *Agent) Run(ctx context.Context) (func(), error) {
 		go func() {
 			for {
 				log.Infof("[dev] Starting KC StreamRegistrations (subscriberId=%d)", subscriberId)
+				chainVerifier := regstate.NewChainVerifier()
+				// The first notification on the stream is the fast-path (own registration)
+				// when an inline RegisterRequest was sent. It arrives before the ordered
+				// replay, so it must not be subject to counter chain verification.
+				expectFastPath := regReq != nil
+
 				err := kcConcrete.StreamRegistrations(ctx, subscriberId, regReq, func(notif *pb.RegistrationNotification) {
 					if rbeState == nil {
 						return
 					}
-					if !regstate.VerifyAndStore(a.regStore, rbeState, notif) {
+
+					// Fast-path notification: the server sends the agent its own
+					// registration immediately, before the ordered replay. Process
+					// it for readiness but skip chain ordering enforcement.
+					if expectFastPath && notif.GetId() == subscriberId {
+						expectFastPath = false
+						if onDemandEnabled {
+							if !regstate.ProcessRegistration(a.regStore, rbeState, notif, regstate.SourceFastPath) {
+								log.Errorf("[dev] verification failed for fast-path registration id=%d", notif.GetId())
+								return
+							}
+							if !a.rbeRegistered.Load() {
+								log.Infof("[dev] own RBE registration confirmed via fast-path (id=%d), marking ready", subscriberId)
+								a.rbeRegistered.Store(true)
+							}
+						} else {
+							log.Infof("[dev] fast-path skipped (on-demand disabled), will process id=%d via ordered stream", subscriberId)
+						}
+						return
+					}
+					expectFastPath = false
+
+					// Ordered replay and live updates: enforce counter chain ordering.
+					if err := chainVerifier.Verify(notif); err != nil {
+						log.Errorf("[dev] counter chain verification failed: %v", err)
+						return
+					}
+
+					if !regstate.ProcessRegistration(a.regStore, rbeState, notif, regstate.SourceStream) {
 						log.Errorf("[dev] verification failed for registration id=%d", notif.GetId())
 						return
 					}

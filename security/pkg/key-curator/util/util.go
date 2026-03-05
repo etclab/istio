@@ -290,6 +290,7 @@ func CheckPodValidity(rbeId *security.RbeId, secret *security.RbeSecretItem) (re
 const MAZU_CONFIG_PATH = "/etc/mazu-config"
 const MAZU_ATTESTATION_ENABLED = "MAZU_ATTESTATION_ENABLED"
 const MAZU_RBE_PROOF_ENABLED = "MAZU_RBE_PROOF_ENABLED"
+const MAZU_ON_DEMAND_ENABLED = "MAZU_ON_DEMAND_ENABLED"
 
 // looks for MAZU_ATTESTATION_ENABLED file loaded by config map: mazu-config
 // under path: /etc/mazu-config/MAZU_ATTESTATION_ENABLED
@@ -311,6 +312,23 @@ func IsAttestationEnabled() bool {
 
 // looks for MAZU_RBE_PROOF_ENABLED file loaded by config map: mazu-config
 // under path: /etc/mazu-config/MAZU_RBE_PROOF_ENABLED
+// IsOnDemandEnabled checks whether on-demand registration fetching is enabled.
+// Reads /etc/mazu-config/MAZU_ON_DEMAND_ENABLED. Disabled by default.
+func IsOnDemandEnabled() bool {
+	filepath := fmt.Sprintf("%s/%s", MAZU_CONFIG_PATH, MAZU_ON_DEMAND_ENABLED)
+	content, err := os.ReadFile(filepath)
+	if err != nil {
+		log.Infof("[dev] on-demand registration is disabled, file %s not found", filepath)
+		return false
+	}
+	if strings.TrimSpace(string(content)) != "true" {
+		log.Infof("[dev] on-demand registration is disabled, with value: %s", string(content))
+		return false
+	}
+	log.Infof("[dev] on-demand registration is enabled")
+	return true
+}
+
 func IsRbeProofEnabled() bool {
 	filepath := fmt.Sprintf("%s/%s", MAZU_CONFIG_PATH, MAZU_RBE_PROOF_ENABLED)
 	content, err := os.ReadFile(filepath)

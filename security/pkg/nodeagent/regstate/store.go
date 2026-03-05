@@ -12,12 +12,22 @@ import (
 	keycurator "istio.io/istio/security/pkg/key-curator/util"
 )
 
+// RegistrationSource indicates which path delivered a registration notification.
+type RegistrationSource int
+
+const (
+	SourceStream   RegistrationSource = iota // ordered replay + live from KC
+	SourceFastPath                           // own registration, before ordered replay
+	SourceOnDemand                           // fetched out-of-order by ext_authz
+)
+
 // UserRegistration holds verified registration data for a single user.
 type UserRegistration struct {
-	ID          int
-	Proof       *bls.G1
-	Attestation *trinc.CounterAttestation
-	PodValid    bool // result of encrypt/decrypt challenge-response
+	ID            int
+	Proof         *bls.G1
+	Attestation   *trinc.CounterAttestation
+	PodValid      bool // result of encrypt/decrypt challenge-response
+	ProofVerified bool // true only when proof was verified against ordered commitments
 }
 
 // Store is a thread-safe map of user ID to registration data.
@@ -44,6 +54,19 @@ func (s *Store) Get(id int) (*UserRegistration, bool) {
 	return r, ok
 }
 
+// SetProofVerified marks an existing registration as proof-verified.
+// Returns true if the entry existed and was updated, false otherwise.
+func (s *Store) SetProofVerified(id int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	reg, ok := s.users[id]
+	if !ok {
+		return false
+	}
+	reg.ProofVerified = true
+	return true
+}
+
 func (s *Store) GetAll() map[int]*UserRegistration {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -64,6 +87,11 @@ type LocalRBEState struct {
 	pp            *rbe.PublicParams               // separate copy, loaded from file
 	userOpenings  map[int]map[int][]*bls.G1       // blockId -> userId -> opening history
 	registeredIds map[int]bool                    // track which IDs have been applied (for idempotency)
+
+	// Ordered commitment shadow — updated ONLY by SourceStream registrations.
+	// Mirrors the KC's commitment evolution for proof verification.
+	orderedCommitments []*bls.G1
+	orderedIds         map[int]bool
 }
 
 // NewLocalRBEState loads PP from file via keycurator.TryParseRbePpFromFile().
@@ -77,10 +105,21 @@ func NewLocalRBEState() (*LocalRBEState, error) {
 	storeLog.Infof("[dev] initialized LocalRBEState with MaxUsers=%d, BlockSize=%d, NumBlocks=%d",
 		pp.MaxUsers, pp.BlockSize, pp.NumBlocks)
 
+	// Deep-copy initial commitments (identity points) into orderedCommitments.
+	orderedComm := make([]*bls.G1, len(pp.Commitments))
+	for i, c := range pp.Commitments {
+		cp := new(bls.G1)
+		b := c.Bytes()
+		cp.SetBytes(b[:])
+		orderedComm[i] = cp
+	}
+
 	return &LocalRBEState{
-		pp:            pp,
-		userOpenings:  make(map[int]map[int][]*bls.G1),
-		registeredIds: make(map[int]bool),
+		pp:                 pp,
+		userOpenings:       make(map[int]map[int][]*bls.G1),
+		registeredIds:      make(map[int]bool),
+		orderedCommitments: orderedComm,
+		orderedIds:         make(map[int]bool),
 	}, nil
 }
 
@@ -162,4 +201,35 @@ func (s *LocalRBEState) IsRegistered(id int) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.registeredIds[id]
+}
+
+// ApplyOrderedCommitment updates the ordered commitment shadow for the given
+// user's block. Only called for SourceStream registrations. Idempotent via orderedIds.
+// Returns true if this was a new application, false if already applied.
+func (s *LocalRBEState) ApplyOrderedCommitment(id int, publicKey *bls.G1) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.orderedIds[id] {
+		return false
+	}
+
+	k := s.pp.IdToBlock(id)
+	com := s.orderedCommitments[k]
+	com.Add(com, publicKey)
+
+	s.orderedIds[id] = true
+	return true
+}
+
+// VerifyMembershipOrdered verifies an RBE membership proof against the ordered
+// commitment shadow (not the primary pp.Commitments). Creates a shallow copy of
+// PP with orderedCommitments substituted. Thread-safe (takes RLock).
+func (s *LocalRBEState) VerifyMembershipOrdered(id int, publicKey *bls.G1, proof *bls.G1) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	ppCopy := *s.pp
+	ppCopy.Commitments = s.orderedCommitments
+	return rbe.VerifyMembership(&ppCopy, id, publicKey, proof)
 }

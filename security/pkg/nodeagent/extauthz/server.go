@@ -49,8 +49,9 @@ type ExtAuthzServer struct {
 	kcClient *kcclient.KCClient      // for on-demand registration queries
 	rbeState *regstate.LocalRBEState // for verifying on-demand results
 
-	onDemandMu    sync.RWMutex
-	onDemandCache map[int]*regstate.UserRegistration // separate from regStore
+	onDemandEnabled bool // feature flag: when false, ext_authz denies unknown users
+	onDemandMu      sync.RWMutex
+	onDemandCache   map[int]*regstate.UserRegistration // separate from regStore
 }
 
 // Check implements the envoy ext_authz v3 AuthorizationServer interface.
@@ -136,10 +137,14 @@ func (s *ExtAuthzServer) Check(_ context.Context, req *authv3.CheckRequest) (*au
 	// Look up the source user in the registration store
 	reg, ok := s.regStore.Get(id)
 	if !ok {
-		// Fallback: query KC directly and cache the result
-		reg, ok = s.fetchAndCacheRegistration(id)
-		if !ok {
-			return deny(fmt.Sprintf("source RBE registration not found for id=%d", id)), nil
+		if s.onDemandEnabled {
+			// Fallback: query KC directly and cache the result
+			reg, ok = s.fetchAndCacheRegistration(id)
+			if !ok {
+				return deny(fmt.Sprintf("source RBE registration not found for id=%d", id)), nil
+			}
+		} else {
+			return deny(fmt.Sprintf("source RBE registration not found for id=%d, waiting for stream", id)), nil
 		}
 	}
 
@@ -237,10 +242,9 @@ func (s *ExtAuthzServer) fetchAndCacheRegistration(id int) (*regstate.UserRegist
 		return nil, false
 	}
 
-	// TODO: edge cases when fetching and validating the user registration
-	// TODO: details out-of-order?
-	// Verify and build registration using the same logic as the stream path
-	if !regstate.VerifyAndStore(s.regStore, s.rbeState, notif) {
+	// Process as on-demand: skips proof verification (relies on challenge-response).
+	// Proof will be verified later when the stream delivers this registration.
+	if !regstate.ProcessRegistration(s.regStore, s.rbeState, notif, regstate.SourceOnDemand) {
 		extAuthzLog.Errorf("[dev] on-demand verification failed for id=%d", id)
 		return nil, false
 	}
@@ -260,7 +264,7 @@ func (s *ExtAuthzServer) fetchAndCacheRegistration(id int) (*regstate.UserRegist
 }
 
 // NewExtAuthzServer creates and starts the ext_authz gRPC server on a UDS.
-func NewExtAuthzServer(store *regstate.Store, kcCl *kcclient.KCClient, rbeState *regstate.LocalRBEState) *ExtAuthzServer {
+func NewExtAuthzServer(store *regstate.Store, kcCl *kcclient.KCClient, rbeState *regstate.LocalRBEState, onDemandEnabled bool) *ExtAuthzServer {
 	// Create a kubernetes client for TokenReview API calls.
 	var kubeClient kubernetes.Interface
 	config, err := rest.InClusterConfig()
@@ -276,12 +280,13 @@ func NewExtAuthzServer(store *regstate.Store, kcCl *kcclient.KCClient, rbeState 
 	}
 
 	s := &ExtAuthzServer{
-		stopped:       atomic.NewBool(false),
-		regStore:      store,
-		kubeClient:    kubeClient,
-		kcClient:      kcCl,
-		rbeState:      rbeState,
-		onDemandCache: make(map[int]*regstate.UserRegistration),
+		stopped:         atomic.NewBool(false),
+		regStore:        store,
+		kubeClient:      kubeClient,
+		kcClient:        kcCl,
+		rbeState:        rbeState,
+		onDemandEnabled: onDemandEnabled,
+		onDemandCache:   make(map[int]*regstate.UserRegistration),
 	}
 
 	s.grpcServer = grpc.NewServer()

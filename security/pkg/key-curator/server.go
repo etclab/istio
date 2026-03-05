@@ -816,6 +816,23 @@ func (kcs *KeyCuratorServer) StreamRegistrations(req *pb.StreamRegistrationsRequ
 			return fmt.Errorf("registration failed for user %d: %w", id, err)
 		}
 		log.Infof("[dev] StreamRegistrations: registered user %d before starting stream", id)
+
+		// Fast-path: send the agent its own notification immediately so it can
+		// become ready without waiting for the full ordered replay. The replay
+		// will deliver this notification again in order for chain verification;
+		// VerifyAndStore on the agent side handles duplicates gracefully.
+		kcs.notificationLogMu.RLock()
+		for i := len(kcs.notificationLog) - 1; i >= 0; i-- {
+			if kcs.notificationLog[i].GetId() == int64(id) {
+				if err := stream.Send(kcs.notificationLog[i]); err != nil {
+					kcs.notificationLogMu.RUnlock()
+					return fmt.Errorf("fast-path send failed for user %d: %w", id, err)
+				}
+				log.Infof("[dev] StreamRegistrations: fast-path sent own notification for id=%d", id)
+				break
+			}
+		}
+		kcs.notificationLogMu.RUnlock()
 	}
 
 	// Determine how far this subscriber has already read, and subscribe atomically.
