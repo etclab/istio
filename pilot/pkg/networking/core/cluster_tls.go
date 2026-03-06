@@ -164,7 +164,8 @@ func (cb *ClusterBuilder) buildUpstreamClusterTLSContext(opts *buildClusterOpts,
 			sec_model.ConstructSdsSecretConfig(sec_model.SDSDefaultResourceName))
 
 		defaultValidationContext := &tlsv3.CertificateValidationContext{
-			MatchSubjectAltNames: util.StringToExactMatch(tls.SubjectAltNames),
+			MatchSubjectAltNames:  util.StringToExactMatch(tls.SubjectAltNames),
+			CustomValidatorConfig: sec_model.RbeCertValidatorConfig(),
 		}
 
 		tlsContext.CommonTlsContext.ValidationContextType = &tlsv3.CommonTlsContext_CombinedValidationContext{

@@ -20,6 +20,7 @@ import (
 
 	core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	tls "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
+	"google.golang.org/protobuf/types/known/anypb"
 
 	networking "istio.io/api/networking/v1alpha3"
 	"istio.io/istio/pilot/pkg/model"
@@ -151,7 +152,8 @@ func ApplyToCommonTLSContext(tlsContext *tls.CommonTlsContext, proxy *model.Prox
 	// configure server listeners with SDS.
 	if validateClient {
 		defaultValidationContext := &tls.CertificateValidationContext{
-			MatchSubjectAltNames: matchSAN,
+			MatchSubjectAltNames:  matchSAN,
+			CustomValidatorConfig: RbeCertValidatorConfig(),
 		}
 		if crl != "" {
 			defaultValidationContext.Crl = &core.DataSource{
@@ -238,6 +240,18 @@ func ApplyCredentialSDSToServerCommonTLSContext(tlsContext *tls.CommonTlsContext
 				MatchSubjectAltNames: util.StringToExactMatch(tlsOpts.SubjectAltNames),
 			},
 		}
+	}
+}
+
+// RbeCertValidatorConfig returns a TypedExtensionConfig for the custom RBE TLS
+// certificate validator. This validator calls the agent's ext_authz server via
+// UDS during the TLS handshake to perform live RBE registration validation.
+func RbeCertValidatorConfig() *core.TypedExtensionConfig {
+	return &core.TypedExtensionConfig{
+		Name: "envoy.tls.cert_validator.rbe",
+		TypedConfig: &anypb.Any{
+			TypeUrl: "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.RBECertValidatorConfig",
+		},
 	}
 }
 

@@ -74,6 +74,13 @@ type ExtAuthzServer struct {
 func (s *ExtAuthzServer) Check(_ context.Context, req *authv3.CheckRequest) (*authv3.CheckResponse, error) {
 	attrs := req.GetAttributes()
 
+	// --- Direct token path (from RBE TLS validator via UDS) ---
+	if httpReq := attrs.GetRequest().GetHttp(); httpReq != nil {
+		if token := httpReq.GetHeaders()["x-rbe-admin-token"]; token != "" {
+			return s.checkWithToken(token)
+		}
+	}
+
 	// --- Log source (downstream caller) info ---
 	src := attrs.GetSource()
 	extAuthzLog.Infof("Check: source.principal=%q, source.service=%q",
@@ -188,6 +195,44 @@ func deny(reason string) *authv3.CheckResponse {
 	return &authv3.CheckResponse{
 		Status: &status.Status{Code: int32(codes.Unauthenticated), Message: reason},
 	}
+}
+
+// checkWithToken validates an RBE registration using a token sent directly
+// from the RBE TLS certificate validator via UDS (no certificate parsing needed).
+func (s *ExtAuthzServer) checkWithToken(token string) (*authv3.CheckResponse, error) {
+	// Verify the token via the Kubernetes TokenReview API (in parallel with RBE checks)
+	tokenErrCh := make(chan error, 1)
+	go func() {
+		tokenErrCh <- s.verifyToken(context.Background(), token)
+	}()
+
+	// Compute the RBE user ID from the token
+	rbeId := &security.RbeId{Token: token}
+	id := int(rbeId.ToNumber())
+	extAuthzLog.Infof("checkWithToken: token received, computed id=%d", id)
+
+	// Look up the registration
+	reg, ok := s.regStore.Get(id)
+	if !ok {
+		if s.onDemandEnabled {
+			reg, ok = s.fetchAndCacheRegistration(id)
+		}
+		if !ok {
+			return deny(fmt.Sprintf("RBE registration not found for id=%d", id)), nil
+		}
+	}
+
+	if !reg.PodValid {
+		return deny(fmt.Sprintf("RBE pod validation failed for id=%d", id)), nil
+	}
+
+	// Wait for TokenReview result before allowing
+	if err := <-tokenErrCh; err != nil {
+		return deny(fmt.Sprintf("token verification failed: %v", err)), nil
+	}
+
+	extAuthzLog.Infof("checkWithToken: RBE validation passed for id=%d", id)
+	return allow(), nil
 }
 
 // AdminTokenOID is the custom X.509 extension OID used to embed the RBE admin token.

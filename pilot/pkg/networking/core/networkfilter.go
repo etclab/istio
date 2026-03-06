@@ -18,9 +18,7 @@ import (
 	"time"
 
 	mysql "github.com/envoyproxy/go-control-plane/contrib/envoy/extensions/filters/network/mysql_proxy/v3"
-	core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
-	extauthztcp "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/ext_authz/v3"
 	mongo "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/mongo_proxy/v3"
 	redis "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/redis_proxy/v3"
 	tcp "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/tcp_proxy/v3"
@@ -58,26 +56,6 @@ func buildMetadataExchangeNetworkFilters() []*listener.Filter {
 	return filterstack
 }
 
-func buildExtAuthzNetworkFilter() *listener.Filter {
-	extAuthzConfig := &extauthztcp.ExtAuthz{
-		GrpcService: &core.GrpcService{
-			TargetSpecifier: &core.GrpcService_EnvoyGrpc_{
-				EnvoyGrpc: &core.GrpcService_EnvoyGrpc{
-					ClusterName: "ext-authz-grpc",
-				},
-			},
-			Timeout: durationpb.New(5 * time.Second),
-		},
-		FailureModeAllow:       false,
-		StatPrefix:             "ext_authz",
-		IncludePeerCertificate: true,
-		IncludeTlsSession:      true,
-	}
-	return &listener.Filter{
-		Name:       wellknown.ExternalAuthorization,
-		ConfigType: &listener.Filter_TypedConfig{TypedConfig: protoconv.MessageToAny(extAuthzConfig)},
-	}
-}
 
 func buildMetricsNetworkFilters(push *model.PushContext, proxy *model.Proxy, class istionetworking.ListenerClass, svc *model.Service) []*listener.Filter {
 	return push.Telemetry.TCPFilters(proxy, class, svc)
@@ -139,10 +117,6 @@ func (lb *ListenerBuilder) buildCompleteNetworkFilters(
 	}
 
 	var filters []*listener.Filter
-
-	// ext_authz network filter - first in chain, fail-closed
-	extAuthzFilter := buildExtAuthzNetworkFilter()
-	filters = append(filters, extAuthzFilter)
 
 	wasm := lb.push.WasmPluginsByListenerInfo(lb.node, model.WasmPluginListenerInfo{
 		Port:    port,

@@ -858,10 +858,6 @@ func (lb *ListenerBuilder) buildInboundNetworkFiltersForHTTP(cc inboundChainConf
 
 	var filters []*listener.Filter
 
-	// ext_authz network filter - first in chain, fail-closed
-	extAuthzFilter := buildExtAuthzNetworkFilter()
-	filters = append(filters, extAuthzFilter)
-
 	// Metadata exchange goes first, so RBAC failures, etc can access the state. See https://github.com/istio/istio/issues/41066
 	if !cc.hbone {
 		filters = append(filters, buildMetadataExchangeNetworkFilters()...)
