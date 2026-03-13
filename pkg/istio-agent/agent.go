@@ -438,13 +438,14 @@ func (a *Agent) Run(ctx context.Context) (func(), error) {
 		kcConcrete = kc
 	}
 
-	// Read on-demand feature flag at startup.
+	// Read feature flags at startup.
 	onDemandEnabled := kcUtil.IsOnDemandEnabled()
+	benchmarkInlineEnabled := kcUtil.IsBenchmarkInlineEnabled()
 
 	// Create shared registration state store and start ext_authz server.
 	// Pass KC client and rbeState so ext_authz can do on-demand fallback queries.
 	a.regStore = regstate.NewStore()
-	a.extAuthzServer = extauthz.NewExtAuthzServer(a.regStore, kcConcrete, rbeState, onDemandEnabled)
+	a.extAuthzServer = extauthz.NewExtAuthzServer(a.regStore, kcConcrete, rbeState, onDemandEnabled, benchmarkInlineEnabled)
 
 	// Start KC registration stream in background with reconnect.
 	// Compute our RBE ID to identify ourselves to the server for cursor tracking.
@@ -463,6 +464,7 @@ func (a *Agent) Run(ctx context.Context) (func(), error) {
 			a.rbeRegistered.Store(true)
 		} else {
 			subscriberId = rbeId.ToNumber()
+			a.extAuthzServer.SetLocalID(subscriberId)
 
 			// Build the RBE user and registration request from local public params.
 			if rbeState != nil {

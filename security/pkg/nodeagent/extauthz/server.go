@@ -15,17 +15,22 @@ import (
 	"sync"
 	"time"
 
+	bls "github.com/cloudflare/circl/ecc/bls12381"
 	"go.uber.org/atomic"
+	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	gproto "google.golang.org/protobuf/proto"
 
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	"google.golang.org/genproto/googleapis/rpc/status"
 	"istio.io/istio/pkg/log"
 	"istio.io/istio/pkg/security"
 	"istio.io/istio/pkg/uds"
+	pb "istio.io/istio/security/pkg/key-curator/key-curator"
 	"istio.io/istio/security/pkg/nodeagent/kcclient"
 	"istio.io/istio/security/pkg/nodeagent/regstate"
+	trincutil "istio.io/istio/security/pkg/trinc/util"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -40,7 +45,7 @@ const (
 	// smallest delay in the K8s token revocation path (~1s kubelet watch delay
 	// + terminationGracePeriodSeconds). We use 1s because the K8s control plane
 	// cannot propagate revocation faster than this.
-	tokenCacheTTL = 1 * time.Second
+	tokenCacheTTL = 2 * time.Second
 )
 
 var extAuthzLog = log.RegisterScope("ext-authz", "ext_authz gRPC server")
@@ -66,12 +71,22 @@ type ExtAuthzServer struct {
 	onDemandMu      sync.RWMutex
 	onDemandCache   map[int]*regstate.UserRegistration // separate from regStore
 
-	tokenCacheMu sync.RWMutex
-	tokenCache   map[[32]byte]tokenCacheEntry // sha256(token) -> cached result
+	benchmarkInline bool  // feature flag: run all checks inline with per-op timing
+	localID         int64 // this pod's RBE ID, set after construction for benchmark logs
+
+	tokenCacheMu    sync.RWMutex
+	tokenCache      map[[32]byte]tokenCacheEntry // sha256(token) -> cached result
+	tokenFlight     singleflight.Group           // coalesces concurrent TokenReview calls for the same token
+	tokenFlightPend sync.Map                     // sfKey -> *atomic.Int64: pending callers per in-flight key
 }
 
 // Check implements the envoy ext_authz v3 AuthorizationServer interface.
 func (s *ExtAuthzServer) Check(_ context.Context, req *authv3.CheckRequest) (*authv3.CheckResponse, error) {
+	checkStart := time.Now()
+	defer func() {
+		extAuthzLog.Infof("[dev] Check: total duration=%v", time.Since(checkStart))
+	}()
+
 	attrs := req.GetAttributes()
 
 	// --- Direct token path (from RBE TLS validator via UDS) ---
@@ -200,16 +215,31 @@ func deny(reason string) *authv3.CheckResponse {
 // checkWithToken validates an RBE registration using a token sent directly
 // from the RBE TLS certificate validator via UDS (no certificate parsing needed).
 func (s *ExtAuthzServer) checkWithToken(token string) (*authv3.CheckResponse, error) {
-	// Verify the token via the Kubernetes TokenReview API (in parallel with RBE checks)
-	tokenErrCh := make(chan error, 1)
-	go func() {
-		tokenErrCh <- s.verifyToken(context.Background(), token)
+	checkStart := time.Now()
+	defer func() {
+		extAuthzLog.Infof("[dev] checkWithToken: total duration=%v", time.Since(checkStart))
 	}()
 
 	// Compute the RBE user ID from the token
 	rbeId := &security.RbeId{Token: token}
 	id := int(rbeId.ToNumber())
 	extAuthzLog.Infof("checkWithToken: token received, computed id=%d", id)
+
+	// Inline benchmark mode: run all checks in the request path with timing
+	if s.benchmarkInline {
+		passed, results := s.runInlineBenchmark(context.Background(), id, token)
+		logBenchmarkResults(s.localID, id, results)
+		if !passed {
+			return deny(fmt.Sprintf("inline benchmark check failed for id=%d", id)), nil
+		}
+		return allow(), nil
+	}
+
+	// Verify the token via the Kubernetes TokenReview API (in parallel with RBE checks)
+	tokenErrCh := make(chan error, 1)
+	go func() {
+		tokenErrCh <- s.verifyToken(context.Background(), token)
+	}()
 
 	// Look up the registration
 	reg, ok := s.regStore.Get(id)
@@ -251,6 +281,8 @@ func extractRbeToken(cert *x509.Certificate) (string, error) {
 
 // verifyToken checks a cached TokenReview result first, falling back to the
 // Kubernetes TokenReview API only when the cache entry is missing or expired.
+// Concurrent calls for the same token are coalesced via singleflight so that
+// only one TokenReview API call is made per cache-miss window.
 func (s *ExtAuthzServer) verifyToken(ctx context.Context, token string) error {
 	if s.kubeClient == nil {
 		return fmt.Errorf("kubernetes client not available")
@@ -267,21 +299,60 @@ func (s *ExtAuthzServer) verifyToken(ctx context.Context, token string) error {
 		return entry.err
 	}
 
-	// Cache miss or expired — call TokenReview.
-	reviewErr := s.doTokenReview(ctx, token)
+	// Cache miss or expired — coalesce concurrent calls for the same token.
+	// singleflight ensures only one goroutine calls doTokenReview; all others
+	// block and receive the same result.
+	sfKey := hex.EncodeToString(key[:])
 
-	s.tokenCacheMu.Lock()
-	s.tokenCache[key] = tokenCacheEntry{
-		err:       reviewErr,
-		expiresAt: time.Now().Add(tokenCacheTTL),
+	// Track how many goroutines are waiting on this key.
+	val, _ := s.tokenFlightPend.LoadOrStore(sfKey, &atomic.Int64{})
+	pending := val.(*atomic.Int64)
+	pending.Add(1)
+
+	v, err, shared := s.tokenFlight.Do(sfKey, func() (interface{}, error) {
+		// Double-check: another goroutine may have populated the cache
+		// while we were waiting for the singleflight slot.
+		s.tokenCacheMu.RLock()
+		entry, ok := s.tokenCache[key]
+		s.tokenCacheMu.RUnlock()
+		if ok && time.Now().Before(entry.expiresAt) {
+			coalesced := pending.Swap(0)
+			s.tokenFlightPend.Delete(sfKey)
+			extAuthzLog.Infof("[dev] verifyToken: singleflight cache-hit after wait for key=%s, coalesced=%d callers", sfKey[:8], coalesced)
+			return entry.err, nil
+		}
+
+		reviewErr := s.doTokenReview(ctx, token)
+
+		s.tokenCacheMu.Lock()
+		s.tokenCache[key] = tokenCacheEntry{
+			err:       reviewErr,
+			expiresAt: time.Now().Add(tokenCacheTTL),
+		}
+		s.tokenCacheMu.Unlock()
+
+		coalesced := pending.Swap(0)
+		s.tokenFlightPend.Delete(sfKey)
+		extAuthzLog.Infof("[dev] verifyToken: singleflight executed TokenReview for key=%s, coalesced=%d callers", sfKey[:8], coalesced)
+
+		return reviewErr, nil
+	})
+	if shared {
+		extAuthzLog.Infof("[dev] verifyToken: singleflight returned shared result for key=%s", sfKey[:8])
 	}
-	s.tokenCacheMu.Unlock()
-
-	return reviewErr
+	if err != nil {
+		// singleflight itself errored (should not happen with our func signature)
+		return err
+	}
+	if reviewErr, _ := v.(error); reviewErr != nil {
+		return reviewErr
+	}
+	return nil
 }
 
 // doTokenReview calls the Kubernetes TokenReview API.
 func (s *ExtAuthzServer) doTokenReview(ctx context.Context, token string) error {
+	start := time.Now()
 	tokenReview := &authenticationv1.TokenReview{
 		Spec: authenticationv1.TokenReviewSpec{
 			Token: token,
@@ -289,15 +360,18 @@ func (s *ExtAuthzServer) doTokenReview(ctx context.Context, token string) error 
 	}
 
 	result, err := s.kubeClient.AuthenticationV1().TokenReviews().Create(ctx, tokenReview, metav1.CreateOptions{})
+	elapsed := time.Since(start)
 	if err != nil {
+		extAuthzLog.Infof("[dev] doTokenReview: API call failed after %v: %v", elapsed, err)
 		return fmt.Errorf("TokenReview API call failed: %w", err)
 	}
 
 	if !result.Status.Authenticated {
+		extAuthzLog.Infof("[dev] doTokenReview: token not authenticated after %v", elapsed)
 		return fmt.Errorf("token not authenticated (error=%q)", result.Status.Error)
 	}
 
-	extAuthzLog.Infof("Check: TokenReview passed for user=%q", result.Status.User.Username)
+	extAuthzLog.Infof("[dev] doTokenReview: passed for user=%q in %v", result.Status.User.Username, elapsed)
 	return nil
 }
 
@@ -350,8 +424,179 @@ func (s *ExtAuthzServer) fetchAndCacheRegistration(id int) (*regstate.UserRegist
 	return reg, true
 }
 
+// benchmarkOpResult holds the timing and result of one inline benchmark operation.
+type benchmarkOpResult struct {
+	op         string
+	durationUs int64
+	passed     bool
+}
+
+// runInlineBenchmark executes all five verification operations inline in the
+// request path, timing each individually. Returns overall pass/fail and per-op results.
+func (s *ExtAuthzServer) runInlineBenchmark(ctx context.Context, id int, token string) (bool, []benchmarkOpResult) {
+	totalStart := time.Now()
+	results := make([]benchmarkOpResult, 0, 5)
+
+	// --- 1. KC fetch ---
+	var notif *pb.RegistrationNotification
+	{
+		start := time.Now()
+		passed := false
+		if s.kcClient != nil {
+			fetchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			var err error
+			notif, err = s.kcClient.FetchRegistration(fetchCtx, int64(id))
+			cancel()
+			if err != nil {
+				extAuthzLog.Errorf("[benchmark] kc_fetch failed for id=%d: %v", id, err)
+			} else {
+				passed = true
+			}
+		} else {
+			extAuthzLog.Errorf("[benchmark] kc_fetch skipped: kcClient is nil")
+		}
+		results = append(results, benchmarkOpResult{
+			op:         "kc_fetch",
+			durationUs: time.Since(start).Microseconds(),
+			passed:     passed,
+		})
+		if !passed {
+			recordBenchmarkMetrics(totalStart, results)
+			return false, results
+		}
+	}
+
+	// --- 2. Counter attestation ---
+	{
+		start := time.Now()
+		passed := true
+		if notif.GetCounterAttestation() != nil && notif.GetRegisterRequestBytes() != nil {
+			attestation := trincutil.AttestationFromProto(notif.GetCounterAttestation())
+			regMsg := notif.GetRegisterRequestBytes()
+			proofBytes, _ := gproto.Marshal(notif.GetProof())
+			attestUserData := append(regMsg, proofBytes...)
+			if !trincutil.DoVerifyCounter(attestUserData, attestation) {
+				extAuthzLog.Errorf("[benchmark] counter_attestation failed for id=%d", id)
+				passed = false
+			}
+		}
+		results = append(results, benchmarkOpResult{
+			op:         "counter_attestation",
+			durationUs: time.Since(start).Microseconds(),
+			passed:     passed,
+		})
+		if !passed {
+			recordBenchmarkMetrics(totalStart, results)
+			return false, results
+		}
+	}
+
+	// --- 3. RBE proof verification ---
+	{
+		start := time.Now()
+		passed := true
+		if notif.GetProof() != nil && len(notif.GetProof().GetPoint()) > 0 && s.rbeState != nil {
+			proof := new(bls.G1)
+			proof.SetBytes(notif.GetProof().GetPoint())
+
+			var publicKey *bls.G1
+			if notif.GetRegisterRequestBytes() != nil {
+				req := &pb.RegisterRequest{}
+				if err := gproto.Unmarshal(notif.GetRegisterRequestBytes(), req); err == nil {
+					publicKey = new(bls.G1)
+					publicKey.SetBytes(req.GetPublicKey().GetPoint())
+				}
+			}
+
+			if publicKey != nil {
+				if !s.rbeState.VerifyMembershipOrdered(id, publicKey, proof) {
+					extAuthzLog.Errorf("[benchmark] rbe_proof verification failed for id=%d", id)
+					passed = false
+				}
+			}
+		}
+		results = append(results, benchmarkOpResult{
+			op:         "rbe_proof",
+			durationUs: time.Since(start).Microseconds(),
+			passed:     passed,
+		})
+		if !passed {
+			recordBenchmarkMetrics(totalStart, results)
+			return false, results
+		}
+	}
+
+	// --- 4. Challenge-response ---
+	{
+		start := time.Now()
+		passed := true
+		if notif.GetRegisterRequestBytes() != nil && s.rbeState != nil {
+			req := &pb.RegisterRequest{}
+			if err := gproto.Unmarshal(notif.GetRegisterRequestBytes(), req); err == nil {
+				passed = regstate.ValidatePodChallenge(s.rbeState, id, req)
+				if !passed {
+					extAuthzLog.Errorf("[benchmark] challenge_response failed for id=%d", id)
+				}
+			} else {
+				extAuthzLog.Errorf("[benchmark] failed to unmarshal RegisterRequest for id=%d: %v", id, err)
+				passed = false
+			}
+		}
+		results = append(results, benchmarkOpResult{
+			op:         "challenge_response",
+			durationUs: time.Since(start).Microseconds(),
+			passed:     passed,
+		})
+		if !passed {
+			recordBenchmarkMetrics(totalStart, results)
+			return false, results
+		}
+	}
+
+	// --- 5. Token review ---
+	{
+		start := time.Now()
+		passed := true
+		if err := s.verifyToken(ctx, token); err != nil {
+			extAuthzLog.Errorf("[benchmark] token_review failed for id=%d: %v", id, err)
+			passed = false
+		}
+		results = append(results, benchmarkOpResult{
+			op:         "token_review",
+			durationUs: time.Since(start).Microseconds(),
+			passed:     passed,
+		})
+		if !passed {
+			recordBenchmarkMetrics(totalStart, results)
+			return false, results
+		}
+	}
+
+	recordBenchmarkMetrics(totalStart, results)
+	return true, results
+}
+
+// logBenchmarkResults emits structured log lines for each benchmark operation.
+// local_id is this pod's RBE ID; peer_id is the remote peer being validated.
+func logBenchmarkResults(localID int64, peerID int, results []benchmarkOpResult) {
+	for _, r := range results {
+		extAuthzLog.Infof("[benchmark] local_id=%d peer_id=%d op=%s duration_us=%d passed=%t",
+			localID, peerID, r.op, r.durationUs, r.passed)
+	}
+}
+
+// recordBenchmarkMetrics records Prometheus histogram values for benchmark operations.
+func recordBenchmarkMetrics(totalStart time.Time, results []benchmarkOpResult) {
+	for _, r := range results {
+		durationMs := float64(r.durationUs) / 1000.0
+		benchmarkOpLatency.With(BenchmarkOp.Value(r.op)).Record(durationMs)
+	}
+	totalMs := float64(time.Since(totalStart).Microseconds()) / 1000.0
+	benchmarkTotalLatency.Record(totalMs)
+}
+
 // NewExtAuthzServer creates and starts the ext_authz gRPC server on a UDS.
-func NewExtAuthzServer(store *regstate.Store, kcCl *kcclient.KCClient, rbeState *regstate.LocalRBEState, onDemandEnabled bool) *ExtAuthzServer {
+func NewExtAuthzServer(store *regstate.Store, kcCl *kcclient.KCClient, rbeState *regstate.LocalRBEState, onDemandEnabled bool, benchmarkInline bool) *ExtAuthzServer {
 	// Create a kubernetes client for TokenReview API calls.
 	var kubeClient kubernetes.Interface
 	config, err := rest.InClusterConfig()
@@ -374,6 +619,7 @@ func NewExtAuthzServer(store *regstate.Store, kcCl *kcclient.KCClient, rbeState 
 		rbeState:        rbeState,
 		onDemandEnabled: onDemandEnabled,
 		onDemandCache:   make(map[int]*regstate.UserRegistration),
+		benchmarkInline: benchmarkInline,
 		tokenCache:      make(map[[32]byte]tokenCacheEntry),
 	}
 
@@ -483,6 +729,11 @@ func oidName(oid asn1.ObjectIdentifier) string {
 		return name
 	}
 	return "unknown"
+}
+
+// SetLocalID sets this pod's own RBE ID for benchmark log correlation.
+func (s *ExtAuthzServer) SetLocalID(id int64) {
+	s.localID = id
 }
 
 // Stop gracefully shuts down the ext_authz server.

@@ -117,7 +117,7 @@ func ProcessRegistration(store *Store, rbeState *LocalRBEState, notif *pb.Regist
 	// --- Step 5: Challenge-response validation ---
 	podValid := false
 	if req != nil {
-		podValid = validatePodChallenge(rbeState, id, req)
+		podValid = ValidatePodChallenge(rbeState, id, req)
 		if podValid {
 			regstateLog.Infof("pod challenge-response validated for id=%d", id)
 		} else {
@@ -138,10 +138,10 @@ func ProcessRegistration(store *Store, rbeState *LocalRBEState, notif *pb.Regist
 	return true
 }
 
-// validatePodChallenge encrypts a nonce for the given user and verifies they
+// ValidatePodChallenge encrypts a nonce for the given user and verifies they
 // can decrypt it, proving the key binding in the commitment is correct.
 // Mirrors CheckPodValidity() in security/pkg/key-curator/util/util.go.
-func validatePodChallenge(rbeState *LocalRBEState, otherUserId int, req *pb.RegisterRequest) (result bool) {
+func ValidatePodChallenge(rbeState *LocalRBEState, otherUserId int, req *pb.RegisterRequest) (result bool) {
 	// BLS crypto operations can panic on invalid inputs
 	defer func() {
 		if err := recover(); err != nil {
