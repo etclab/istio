@@ -151,11 +151,11 @@ func ValidatePodChallenge(rbeState *LocalRBEState, otherUserId int, req *pb.Regi
 
 	pp := rbeState.GetPP()
 
-	// 1. Generate nonce and hash to Gt
+	// 1. Generate nonce and hash to Gt (1 pairing)
 	nonce := []byte(fmt.Sprintf("%d", time.Now().Unix()))
 	nonceHash := keycurator.HashToGt(nonce)
 
-	// 2. Encrypt nonce for the other user (standalone, no User needed)
+	// 2. Encrypt nonce for the other user (2 pairings)
 	cipherText := rbe.Encrypt(pp, otherUserId, nonceHash)
 
 	// 3. Derive other user's secret key from ip+token
@@ -166,19 +166,20 @@ func ValidatePodChallenge(rbeState *LocalRBEState, otherUserId int, req *pb.Regi
 	sk := new(bls.Scalar)
 	sk.SetUint64(uint64(otherRbeId.SecretKey()))
 
-	// 4. Create other user with the derived secret key
-	otherUser := rbe.NewUserWithSecret(pp, otherUserId, sk)
+	// 4. Create other user with the derived secret key (decrypt-only, skips xi computation)
+	otherUser := rbe.NewUserForDecrypt(pp, otherUserId, sk)
 
 	// 5. Get openings and update the other user
 	openings := rbeState.GetOpening(otherUserId)
 	otherUser.Update(pp.Commitments, openings)
 
-	// 6. Decrypt and compare
+	// 6. Decrypt and compare (4 pairings)
 	decryptedNonce, err := otherUser.Decrypt(cipherText)
 	if err != nil {
 		regstateLog.Errorf("[dev] failed to decrypt nonce for id=%d: %v", otherUserId, err)
 		return false
 	}
 
-	return nonceHash.IsEqual(decryptedNonce)
+	matched := nonceHash.IsEqual(decryptedNonce)
+	return matched
 }
