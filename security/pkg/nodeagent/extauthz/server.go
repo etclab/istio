@@ -45,7 +45,7 @@ const (
 	// smallest delay in the K8s token revocation path (~1s kubelet watch delay
 	// + terminationGracePeriodSeconds). We use 1s because the K8s control plane
 	// cannot propagate revocation faster than this.
-	tokenCacheTTL = 2 * time.Second
+	tokenCacheTTL = 1 * time.Second
 )
 
 var extAuthzLog = log.RegisterScope("ext-authz", "ext_authz gRPC server")
@@ -288,6 +288,11 @@ func (s *ExtAuthzServer) verifyToken(ctx context.Context, token string) error {
 		return fmt.Errorf("kubernetes client not available")
 	}
 
+	verifyStart := time.Now()
+	defer func() {
+		verifyTokenLatency.Record(float64(time.Since(verifyStart).Microseconds()) / 1000.0)
+	}()
+
 	key := sha256.Sum256([]byte(token))
 
 	// Check cache under read lock.
@@ -361,6 +366,7 @@ func (s *ExtAuthzServer) doTokenReview(ctx context.Context, token string) error 
 
 	result, err := s.kubeClient.AuthenticationV1().TokenReviews().Create(ctx, tokenReview, metav1.CreateOptions{})
 	elapsed := time.Since(start)
+	tokenReviewAPILatency.Record(float64(elapsed.Microseconds()) / 1000.0)
 	if err != nil {
 		extAuthzLog.Infof("[dev] doTokenReview: API call failed after %v: %v", elapsed, err)
 		return fmt.Errorf("TokenReview API call failed: %w", err)

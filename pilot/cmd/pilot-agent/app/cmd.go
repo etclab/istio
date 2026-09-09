@@ -138,6 +138,7 @@ func newProxyCommand(sds istioagent.SDSServiceFactory) *cobra.Command {
 				LogLevel: proxyArgs.ProxyLogLevel,
 				// LogLevel: "debug",
 				ComponentLogLevel: proxyArgs.ProxyComponentLogLevel,
+				// ComponentLogLevel: "misc:info,connection:trace,conn_handler:trace,upstream:trace,http:trace",
 				// ComponentLogLevel: "misc:info",
 				LogAsJSON: loggingOptions.JSONEncoding,
 				NodeIPs:   proxyArgs.IPAddresses,
