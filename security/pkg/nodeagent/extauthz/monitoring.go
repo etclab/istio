@@ -28,6 +28,16 @@ var (
 		[]float64{0.1, 0.5, 1, 2.5, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000},
 	)
 
+	// tokenReviewRoundTripLatency measures only the apiserver round trip of a
+	// TokenReview, excluding client-go rate-limiter wait. The gap between this
+	// and tokenReviewAPILatency is the client-side throttle wait — client-go
+	// only logs waits above 1s, so this is the way to see sub-second throttling.
+	tokenReviewRoundTripLatency = monitoring.NewDistribution(
+		"mazu_token_review_roundtrip_latency_ms",
+		"Latency of the TokenReview apiserver round trip, excluding client-go rate-limiter wait, in milliseconds.",
+		[]float64{0.1, 0.5, 1, 2.5, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000},
+	)
+
 	// verifyTokenLatency measures the effective latency of verifyToken
 	// (including cache hits) to reflect what Check() actually waits on.
 	verifyTokenLatency = monitoring.NewDistribution(

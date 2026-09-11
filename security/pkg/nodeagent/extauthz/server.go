@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"strings"
 	"sync"
@@ -24,6 +25,7 @@ import (
 
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	"google.golang.org/genproto/googleapis/rpc/status"
+	"istio.io/istio/pkg/env"
 	"istio.io/istio/pkg/log"
 	"istio.io/istio/pkg/security"
 	"istio.io/istio/pkg/uds"
@@ -49,6 +51,21 @@ const (
 )
 
 var extAuthzLog = log.RegisterScope("ext-authz", "ext_authz gRPC server")
+
+// TokenReview client-go rate limits. rest.InClusterConfig() leaves QPS/Burst at
+// zero, so client-go substitutes DefaultQPS=5 / DefaultBurst=10 — a 5 QPS token
+// bucket in front of every TokenReviews().Create(). With tokenCacheTTL at 1s the
+// Check:TokenReview ratio is close to 1:1, so a fan-out pod exceeds 5/s and
+// queues in the client, not at the apiserver. These raise the client-side
+// ceiling; they are env-overridable so a single image can serve both arms of an
+// A/B run (set MAZU_TOKENREVIEW_QPS=5, MAZU_TOKENREVIEW_BURST=10 for the
+// client-go default baseline).
+var (
+	tokenReviewQPS = env.Register("MAZU_TOKENREVIEW_QPS", 60.0,
+		"client-go QPS for the ext_authz TokenReview client. 0 falls back to client-go's default of 5.").Get()
+	tokenReviewBurst = env.Register("MAZU_TOKENREVIEW_BURST", 120,
+		"client-go Burst for the ext_authz TokenReview client. 0 falls back to client-go's default of 10.").Get()
+)
 
 // tokenCacheEntry holds a cached TokenReview result.
 type tokenCacheEntry struct {
@@ -355,6 +372,19 @@ func (s *ExtAuthzServer) verifyToken(ctx context.Context, token string) error {
 	return nil
 }
 
+// timedRoundTripper records the apiserver round-trip latency of TokenReview
+// requests, excluding time spent waiting in client-go's rate limiter.
+type timedRoundTripper struct {
+	inner http.RoundTripper
+}
+
+func (t *timedRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	start := time.Now()
+	resp, err := t.inner.RoundTrip(req)
+	tokenReviewRoundTripLatency.Record(float64(time.Since(start).Microseconds()) / 1000.0)
+	return resp, err
+}
+
 // doTokenReview calls the Kubernetes TokenReview API.
 func (s *ExtAuthzServer) doTokenReview(ctx context.Context, token string) error {
 	start := time.Now()
@@ -609,6 +639,17 @@ func NewExtAuthzServer(store *regstate.Store, kcCl *kcclient.KCClient, rbeState 
 	if err != nil {
 		extAuthzLog.Errorf("failed to get in-cluster config for TokenReview: %v", err)
 	} else {
+		// Lift the client-go rate limiter off client-go's DefaultQPS=5.
+		config.QPS = float32(tokenReviewQPS)
+		config.Burst = tokenReviewBurst
+		// Separate apiserver latency from client-side throttle wait: this wraps
+		// the transport, which runs after the rate limiter, so it times the
+		// round trip only. tokenReviewAPILatency times the whole Create() and
+		// therefore includes any wait in the bucket.
+		config.Wrap(func(rt http.RoundTripper) http.RoundTripper {
+			return &timedRoundTripper{inner: rt}
+		})
+		extAuthzLog.Infof("TokenReview client rate limits: QPS=%v Burst=%d", config.QPS, config.Burst)
 		clientset, err := kubernetes.NewForConfig(config)
 		if err != nil {
 			extAuthzLog.Errorf("failed to create kubernetes client for TokenReview: %v", err)
