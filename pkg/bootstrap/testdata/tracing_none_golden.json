@@ -122,6 +122,12 @@
           "prefix": "cluster.xds-grpc"
           },
           {
+          "prefix": "cluster.rbe_ext_authz"
+          },
+          {
+          "prefix": "rbe"
+          },
+          {
           "prefix": "wasm"
           },
           {
@@ -261,6 +267,35 @@
                 "address":{
                   "pipe": {
                     "path": "./var/run/secrets/workload-spiffe-uds/socket"
+                  }
+                }
+              }
+            }]
+          }]
+        }
+      },
+      {
+        "name": "rbe_ext_authz",
+        "alt_stat_name": "rbe_ext_authz;",
+        "type": "STATIC",
+        "typed_extension_protocol_options": {
+          "envoy.extensions.upstreams.http.v3.HttpProtocolOptions": {
+           "@type": "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions",
+           "explicit_http_config": {
+            "http2_protocol_options": {}
+           }
+          }
+        },
+        "connect_timeout": "1s",
+        "lb_policy": "ROUND_ROBIN",
+        "load_assignment": {
+          "cluster_name": "rbe_ext_authz",
+          "endpoints": [{
+            "lb_endpoints": [{
+              "endpoint": {
+                "address":{
+                  "pipe": {
+                    "path": "./etc/istio/proxy/ext-authz.sock"
                   }
                 }
               }
