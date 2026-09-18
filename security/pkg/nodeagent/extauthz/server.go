@@ -92,6 +92,11 @@ type ExtAuthzServer struct {
 	benchmarkInline bool  // feature flag: run all checks inline with per-op timing
 	localID         int64 // this pod's RBE ID, set after construction for benchmark logs
 
+	// lazyStore, when non-nil, replaces the regStore lookup with a deferred
+	// validation of the peer on first contact. Non-nil is the feature flag:
+	// the agent only builds one when MAZU_LAZY_REGISTRATION_ENABLED is set.
+	lazyStore *regstate.LazyStore
+
 	tokenCacheMu    sync.RWMutex
 	tokenCache      map[[32]byte]tokenCacheEntry // sha256(token) -> cached result
 	tokenFlight     singleflight.Group           // coalesces concurrent TokenReview calls for the same token
@@ -190,6 +195,19 @@ func (s *ExtAuthzServer) Check(_ context.Context, req *authv3.CheckRequest) (*au
 	id := int(rbeId.ToNumber())
 	extAuthzLog.Infof("Check: extracted RBE token, computed id=%d", id)
 
+	// Lazy path: validate the peer against the deferred accumulator instead of
+	// looking up a verdict the stream path never computed.
+	if s.lazyStore != nil {
+		if resp := s.checkLazy(id); resp != nil {
+			return resp, nil
+		}
+		if err := <-tokenErrCh; err != nil {
+			return deny(fmt.Sprintf("token verification failed: %v", err)), nil
+		}
+		extAuthzLog.Infof("Check: RBE validation passed for id=%d (lazy)", id)
+		return allow(), nil
+	}
+
 	// Look up the source user in the registration store
 	reg, ok := s.regStore.Get(id)
 	if !ok {
@@ -259,6 +277,18 @@ func (s *ExtAuthzServer) checkWithToken(token string) (*authv3.CheckResponse, er
 		tokenErrCh <- s.verifyToken(context.Background(), token)
 	}()
 
+	// Lazy path: validate the peer against the deferred accumulator.
+	if s.lazyStore != nil {
+		if resp := s.checkLazy(id); resp != nil {
+			return resp, nil
+		}
+		if err := <-tokenErrCh; err != nil {
+			return deny(fmt.Sprintf("token verification failed: %v", err)), nil
+		}
+		extAuthzLog.Infof("checkWithToken: RBE validation passed for id=%d (lazy)", id)
+		return allow(), nil
+	}
+
 	// Look up the registration
 	reg, ok := s.regStore.Get(id)
 	if !ok {
@@ -281,6 +311,34 @@ func (s *ExtAuthzServer) checkWithToken(token string) (*authv3.CheckResponse, er
 
 	extAuthzLog.Infof("checkWithToken: RBE validation passed for id=%d", id)
 	return allow(), nil
+}
+
+// checkLazy runs the deferred validation for a peer under the lazy
+// registration accumulator. It returns a deny response when the peer cannot be
+// validated, or nil when validation passed and the caller should continue to
+// the TokenReview result.
+//
+// Unlike the eager path there is no stored verdict to read: the stream path
+// only appended the registration, so the pairing work happens here, once per
+// peer. Subsequent connections hit the memo inside LazyStore and cost a map
+// lookup. A peer whose registration has not been streamed yet is denied rather
+// than fetched from the KC — lazy mode does not compose with on-demand.
+func (s *ExtAuthzServer) checkLazy(id int) *authv3.CheckResponse {
+	if !s.lazyStore.Has(id) {
+		return deny(fmt.Sprintf("source RBE registration not found for id=%d, waiting for stream (lazy)", id))
+	}
+
+	ok, timing := s.lazyStore.Validate(id)
+	if timing != nil && !timing.Cached {
+		extAuthzLog.Infof("[benchmark] lazy local_id=%d peer_id=%d block_depth=%d decompressions=%d "+
+			"materialize_us=%d rbe_proof_us=%d challenge_response_us=%d total_us=%d passed=%t",
+			s.localID, id, timing.BlockDepth, timing.Decompressions,
+			timing.MaterializeUs, timing.ProofUs, timing.ChallengeUs, timing.TotalUs, ok)
+	}
+	if !ok {
+		return deny(fmt.Sprintf("lazy RBE validation failed for id=%d", id))
+	}
+	return nil
 }
 
 // AdminTokenOID is the custom X.509 extension OID used to embed the RBE admin token.
@@ -714,7 +772,10 @@ func recordBenchmarkMetrics(totalStart time.Time, results []benchmarkOpResult) {
 }
 
 // NewExtAuthzServer creates and starts the ext_authz gRPC server on a UDS.
-func NewExtAuthzServer(store *regstate.Store, kcCl *kcclient.KCClient, rbeState *regstate.LocalRBEState, onDemandEnabled bool, benchmarkInline bool) *ExtAuthzServer {
+// A non-nil lazyStore switches the Check path onto deferred peer validation;
+// pass nil to keep the existing eager behaviour.
+func NewExtAuthzServer(store *regstate.Store, kcCl *kcclient.KCClient, rbeState *regstate.LocalRBEState,
+	onDemandEnabled bool, benchmarkInline bool, lazyStore *regstate.LazyStore) *ExtAuthzServer {
 	// Create a kubernetes client for TokenReview API calls.
 	var kubeClient kubernetes.Interface
 	config, err := rest.InClusterConfig()
@@ -749,6 +810,7 @@ func NewExtAuthzServer(store *regstate.Store, kcCl *kcclient.KCClient, rbeState 
 		onDemandEnabled: onDemandEnabled,
 		onDemandCache:   make(map[int]*regstate.UserRegistration),
 		benchmarkInline: benchmarkInline,
+		lazyStore:       lazyStore,
 		tokenCache:      make(map[[32]byte]tokenCacheEntry),
 	}
 

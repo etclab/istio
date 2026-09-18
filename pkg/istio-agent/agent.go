@@ -441,11 +441,35 @@ func (a *Agent) Run(ctx context.Context) (func(), error) {
 	// Read feature flags at startup.
 	onDemandEnabled := kcUtil.IsOnDemandEnabled()
 	benchmarkInlineEnabled := kcUtil.IsBenchmarkInlineEnabled()
+	lazyEnabled := kcUtil.IsLazyRegistrationEnabled()
+
+	// Lazy registration replaces the eager accumulator: the stream path only
+	// verifies the counter chain and appends, and the pairing work moves to the
+	// first connection involving each peer. It needs public params, and it
+	// takes precedence over on-demand fetching, which it does not compose with.
+	var lazyStore *regstate.LazyStore
+	if lazyEnabled {
+		if rbeState == nil {
+			log.Errorf("[dev] lazy registration requested but local RBE state is unavailable; falling back to the eager path")
+			lazyEnabled = false
+		} else {
+			lazyStore = regstate.NewLazyStore(rbeState.GetPP())
+			if onDemandEnabled {
+				log.Warnf("[dev] lazy registration and on-demand fetching are both enabled; on-demand is ignored")
+				onDemandEnabled = false
+			}
+			if benchmarkInlineEnabled {
+				log.Warnf("[dev] lazy registration and inline benchmark mode are both enabled; inline benchmark is ignored")
+				benchmarkInlineEnabled = false
+			}
+		}
+	}
 
 	// Create shared registration state store and start ext_authz server.
 	// Pass KC client and rbeState so ext_authz can do on-demand fallback queries.
 	a.regStore = regstate.NewStore()
-	a.extAuthzServer = extauthz.NewExtAuthzServer(a.regStore, kcConcrete, rbeState, onDemandEnabled, benchmarkInlineEnabled)
+	a.extAuthzServer = extauthz.NewExtAuthzServer(a.regStore, kcConcrete, rbeState,
+		onDemandEnabled, benchmarkInlineEnabled, lazyStore)
 
 	// Start KC registration stream in background with reconnect.
 	// Compute our RBE ID to identify ourselves to the server for cursor tracking.
@@ -493,9 +517,13 @@ func (a *Agent) Run(ctx context.Context) (func(), error) {
 					// Fast-path notification: the server sends the agent its own
 					// registration immediately, before the ordered replay. Process
 					// it for readiness but skip chain ordering enforcement.
+					// In lazy mode the fast-path notification must not be
+					// appended: it arrives ahead of the ordered replay, and the
+					// log order is the prefix that each membership proof is
+					// verified against. The ordered stream delivers it again.
 					if expectFastPath && notif.GetId() == subscriberId {
 						expectFastPath = false
-						if onDemandEnabled {
+						if onDemandEnabled && !lazyEnabled {
 							if !regstate.ProcessRegistration(a.regStore, rbeState, notif, regstate.SourceFastPath) {
 								log.Errorf("[dev] verification failed for fast-path registration id=%d", notif.GetId())
 								return
@@ -505,7 +533,7 @@ func (a *Agent) Run(ctx context.Context) (func(), error) {
 								a.rbeRegistered.Store(true)
 							}
 						} else {
-							log.Infof("[dev] fast-path skipped (on-demand disabled), will process id=%d via ordered stream", subscriberId)
+							log.Infof("[dev] fast-path skipped (on-demand disabled or lazy enabled), will process id=%d via ordered stream", subscriberId)
 						}
 						return
 					}
@@ -517,7 +545,12 @@ func (a *Agent) Run(ctx context.Context) (func(), error) {
 						return
 					}
 
-					if !regstate.ProcessRegistration(a.regStore, rbeState, notif, regstate.SourceStream) {
+					if lazyEnabled {
+						if !regstate.ProcessRegistrationLazy(lazyStore, notif) {
+							log.Errorf("[dev] lazy append failed for registration id=%d", notif.GetId())
+							return
+						}
+					} else if !regstate.ProcessRegistration(a.regStore, rbeState, notif, regstate.SourceStream) {
 						log.Errorf("[dev] verification failed for registration id=%d", notif.GetId())
 						return
 					}

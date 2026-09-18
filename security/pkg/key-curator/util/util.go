@@ -293,6 +293,7 @@ const MAZU_ATTESTATION_ENABLED = "MAZU_ATTESTATION_ENABLED"
 const MAZU_RBE_PROOF_ENABLED = "MAZU_RBE_PROOF_ENABLED"
 const MAZU_ON_DEMAND_ENABLED = "MAZU_ON_DEMAND_ENABLED"
 const MAZU_BENCHMARK_INLINE_ENABLED = "MAZU_BENCHMARK_INLINE_ENABLED"
+const MAZU_LAZY_REGISTRATION_ENABLED = "MAZU_LAZY_REGISTRATION_ENABLED"
 const MAZU_ENVOY_CACHE_TTL_MS = "MAZU_ENVOY_CACHE_TTL_MS"
 
 // looks for MAZU_ATTESTATION_ENABLED file loaded by config map: mazu-config
@@ -376,6 +377,37 @@ func IsOnDemandEnabled() bool {
 		return false
 	}
 	log.Infof("[dev] on-demand registration is enabled")
+	return true
+}
+
+// IsLazyRegistrationEnabled checks whether the lazy registration accumulator is
+// enabled. Reads /etc/mazu-config/MAZU_LAZY_REGISTRATION_ENABLED. Disabled by
+// default.
+//
+// When enabled, the agent keeps stream-delivered registrations as an
+// append-only log — verifying the TRINC counter chain in order, but decompressing
+// only pk — and defers the xi decompressions, the membership proof and the
+// challenge-response to the first connection involving each peer. This replaces
+// the eager path rather than supplementing it: the two accumulators share no
+// mutable state, so the flag is a clean A/B switch.
+//
+// It is mutually exclusive with MAZU_ON_DEMAND_ENABLED, which fetches unknown
+// registrations from the KC mid-connection; lazy mode denies a peer whose
+// registration has not yet been streamed, matching the on-demand-disabled
+// default. It is also independent of MAZU_BENCHMARK_INLINE_ENABLED, which
+// measures the existing eager path and must not be enabled at the same time.
+func IsLazyRegistrationEnabled() bool {
+	filepath := fmt.Sprintf("%s/%s", MAZU_CONFIG_PATH, MAZU_LAZY_REGISTRATION_ENABLED)
+	content, err := os.ReadFile(filepath)
+	if err != nil {
+		log.Infof("[dev] lazy registration is disabled, file %s not found", filepath)
+		return false
+	}
+	if strings.TrimSpace(string(content)) != "true" {
+		log.Infof("[dev] lazy registration is disabled, with value: %s", string(content))
+		return false
+	}
+	log.Infof("[dev] lazy registration is enabled")
 	return true
 }
 
