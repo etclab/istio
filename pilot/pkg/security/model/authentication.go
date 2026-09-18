@@ -16,11 +16,15 @@ package model
 
 import (
 	gotls "crypto/tls"
+	"strconv"
 	"strings"
+	"sync"
 
+	udpa "github.com/cncf/xds/go/udpa/type/v1"
 	core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	tls "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
 	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	networking "istio.io/api/networking/v1alpha3"
 	"istio.io/istio/pilot/pkg/model"
@@ -30,6 +34,7 @@ import (
 	pm "istio.io/istio/pkg/model"
 	"istio.io/istio/pkg/security"
 	"istio.io/istio/pkg/spiffe"
+	keycurator "istio.io/istio/security/pkg/key-curator/util"
 )
 
 const (
@@ -243,16 +248,61 @@ func ApplyCredentialSDSToServerCommonTLSContext(tlsContext *tls.CommonTlsContext
 	}
 }
 
+const rbeCertValidatorName = "envoy.tls.cert_validator.rbe"
+
+const rbeCertValidatorTypeURL = "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.RBECertValidatorConfig"
+
+// rbeCertValidatorTypedConfig is resolved once, on first use. The value comes
+// from a ConfigMap mounted into istiod, which does not change under a running
+// istiod, so re-reading it on every push would only add file I/O to the hot
+// config-generation path. Changing it requires an istiod restart.
+var rbeCertValidatorTypedConfig = sync.OnceValue(buildRbeCertValidatorTypedConfig)
+
 // RbeCertValidatorConfig returns a TypedExtensionConfig for the custom RBE TLS
 // certificate validator. This validator calls the agent's ext_authz server via
 // UDS during the TLS handshake to perform live RBE registration validation.
+//
+// Envoy resolves the validator factory by Name, so the typed config carries
+// only tuning knobs. It is emitted as a TypedStruct, which Envoy translates
+// into the real RBECertValidatorConfig at config load; that avoids having to
+// vendor Go bindings for a proto that only exists in our Envoy fork.
 func RbeCertValidatorConfig() *core.TypedExtensionConfig {
 	return &core.TypedExtensionConfig{
-		Name: "envoy.tls.cert_validator.rbe",
-		TypedConfig: &anypb.Any{
-			TypeUrl: "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.RBECertValidatorConfig",
-		},
+		Name:        rbeCertValidatorName,
+		TypedConfig: rbeCertValidatorTypedConfig(),
 	}
+}
+
+func buildRbeCertValidatorTypedConfig() *anypb.Any {
+	fields := map[string]*structpb.Value{}
+
+	// MAZU_ENVOY_CACHE_TTL_MS=0 disables the validator's per-worker verdict
+	// cache so that every handshake reaches the agent's ext_authz server. Left
+	// unset, the field is omitted and Envoy applies its own 1s default.
+	if ms, ok := keycurator.EnvoyCacheTTLMs(); ok {
+		// protobuf JSON only accepts a seconds-suffixed duration ("0s",
+		// "0.25s"), which rules out time.Duration.String() — it would render
+		// 90000ms as "1m30s".
+		secs := strconv.FormatFloat(float64(ms)/1000, 'f', -1, 64)
+		fields["cache_ttl"] = structpb.NewStringValue(secs + "s")
+		log.Infof("[dev] RbeCertValidatorConfig: cache_ttl=%dms", ms)
+	}
+
+	if len(fields) == 0 {
+		// Nothing to override; an empty Any keeps the wire format unchanged
+		// from before this knob existed.
+		return &anypb.Any{TypeUrl: rbeCertValidatorTypeURL}
+	}
+
+	typed, err := anypb.New(&udpa.TypedStruct{
+		TypeUrl: rbeCertValidatorTypeURL,
+		Value:   &structpb.Struct{Fields: fields},
+	})
+	if err != nil {
+		log.Errorf("failed to build RBE cert validator config, falling back to defaults: %v", err)
+		return &anypb.Any{TypeUrl: rbeCertValidatorTypeURL}
+	}
+	return typed
 }
 
 func EnforceGoCompliance(ctx *gotls.Config) {

@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -296,10 +297,25 @@ func extractRbeToken(cert *x509.Certificate) (string, error) {
 	return "", fmt.Errorf("AdminTokenOID extension %v not found in certificate", AdminTokenOID)
 }
 
+// tokenCacheActive reports whether TokenReview results should be served from,
+// and written to, the TTL cache. Inline benchmark mode turns the cache off: at
+// tokenCacheTTL=1s and a benchmark that reuses one peer identity, virtually
+// every Check would hit the cache and the token_review op would report the cost
+// of a map lookup instead of the cost of a TokenReview.
+func (s *ExtAuthzServer) tokenCacheActive() bool {
+	return !s.benchmarkInline
+}
+
 // verifyToken checks a cached TokenReview result first, falling back to the
 // Kubernetes TokenReview API only when the cache entry is missing or expired.
 // Concurrent calls for the same token are coalesced via singleflight so that
 // only one TokenReview API call is made per cache-miss window.
+//
+// Inline benchmark mode bypasses the TTL cache entirely (see tokenCacheActive),
+// so the token_review op measures a real TokenReview rather than a map lookup.
+// singleflight still applies — it is a concurrency dedup, not a cache, and
+// without it the per-handshake call rate would sit far above the client-go
+// rate limiter and the op would degrade into measuring queue time.
 func (s *ExtAuthzServer) verifyToken(ctx context.Context, token string) error {
 	if s.kubeClient == nil {
 		return fmt.Errorf("kubernetes client not available")
@@ -311,14 +327,17 @@ func (s *ExtAuthzServer) verifyToken(ctx context.Context, token string) error {
 	}()
 
 	key := sha256.Sum256([]byte(token))
+	cacheActive := s.tokenCacheActive()
 
 	// Check cache under read lock.
-	s.tokenCacheMu.RLock()
-	entry, ok := s.tokenCache[key]
-	s.tokenCacheMu.RUnlock()
+	if cacheActive {
+		s.tokenCacheMu.RLock()
+		entry, ok := s.tokenCache[key]
+		s.tokenCacheMu.RUnlock()
 
-	if ok && time.Now().Before(entry.expiresAt) {
-		return entry.err
+		if ok && time.Now().Before(entry.expiresAt) {
+			return entry.err
+		}
 	}
 
 	// Cache miss or expired — coalesce concurrent calls for the same token.
@@ -334,24 +353,28 @@ func (s *ExtAuthzServer) verifyToken(ctx context.Context, token string) error {
 	v, err, shared := s.tokenFlight.Do(sfKey, func() (interface{}, error) {
 		// Double-check: another goroutine may have populated the cache
 		// while we were waiting for the singleflight slot.
-		s.tokenCacheMu.RLock()
-		entry, ok := s.tokenCache[key]
-		s.tokenCacheMu.RUnlock()
-		if ok && time.Now().Before(entry.expiresAt) {
-			coalesced := pending.Swap(0)
-			s.tokenFlightPend.Delete(sfKey)
-			extAuthzLog.Infof("[dev] verifyToken: singleflight cache-hit after wait for key=%s, coalesced=%d callers", sfKey[:8], coalesced)
-			return entry.err, nil
+		if cacheActive {
+			s.tokenCacheMu.RLock()
+			entry, ok := s.tokenCache[key]
+			s.tokenCacheMu.RUnlock()
+			if ok && time.Now().Before(entry.expiresAt) {
+				coalesced := pending.Swap(0)
+				s.tokenFlightPend.Delete(sfKey)
+				extAuthzLog.Infof("[dev] verifyToken: singleflight cache-hit after wait for key=%s, coalesced=%d callers", sfKey[:8], coalesced)
+				return entry.err, nil
+			}
 		}
 
 		reviewErr := s.doTokenReview(ctx, token)
 
-		s.tokenCacheMu.Lock()
-		s.tokenCache[key] = tokenCacheEntry{
-			err:       reviewErr,
-			expiresAt: time.Now().Add(tokenCacheTTL),
+		if cacheActive {
+			s.tokenCacheMu.Lock()
+			s.tokenCache[key] = tokenCacheEntry{
+				err:       reviewErr,
+				expiresAt: time.Now().Add(tokenCacheTTL),
+			}
+			s.tokenCacheMu.Unlock()
 		}
-		s.tokenCacheMu.Unlock()
 
 		coalesced := pending.Swap(0)
 		s.tokenFlightPend.Delete(sfKey)
@@ -467,21 +490,111 @@ type benchmarkOpResult struct {
 	passed     bool
 }
 
-// runInlineBenchmark executes all five verification operations inline in the
-// request path, timing each individually. Returns overall pass/fail and per-op results.
+// benchmarkOpOrder is the canonical reporting order of the inline benchmark
+// operations. The ops run concurrently, so results arrive unordered; this keeps
+// the log lines and the recorded metrics in a stable order across requests.
+var benchmarkOpOrder = map[string]int{
+	"kc_fetch":            0,
+	"counter_attestation": 1,
+	"rbe_proof":           2,
+	"challenge_response":  3,
+	"token_review":        4,
+}
+
+// benchmarkRun collects the per-op results of one inline benchmark run and
+// signals the first failure so the caller can return without waiting for the
+// operations that are still in flight.
+type benchmarkRun struct {
+	mu      sync.Mutex
+	results []benchmarkOpResult
+
+	wg     sync.WaitGroup
+	failed chan struct{} // buffered to len(benchmarkOpOrder): a failing op never blocks
+}
+
+// run executes fn on its own goroutine, timing it and recording the outcome.
+// Launching from inside another tracked goroutine is safe: the counter is
+// already non-zero at that point, so the Add cannot race with wait.
+func (b *benchmarkRun) run(op string, fn func() bool) {
+	b.wg.Add(1)
+	go func() {
+		defer b.wg.Done()
+		start := time.Now()
+		passed := fn()
+		b.mu.Lock()
+		b.results = append(b.results, benchmarkOpResult{
+			op:         op,
+			durationUs: time.Since(start).Microseconds(),
+			passed:     passed,
+		})
+		b.mu.Unlock()
+		if !passed {
+			b.failed <- struct{}{}
+		}
+	}()
+}
+
+// snapshot returns a copy of the results recorded so far, in canonical op
+// order. Operations still in flight keep appending to b.results after a
+// fail-fast return, so the caller must work off this copy.
+func (b *benchmarkRun) snapshot() []benchmarkOpResult {
+	b.mu.Lock()
+	out := make([]benchmarkOpResult, len(b.results))
+	copy(out, b.results)
+	b.mu.Unlock()
+	sort.Slice(out, func(i, j int) bool {
+		return benchmarkOpOrder[out[i].op] < benchmarkOpOrder[out[j].op]
+	})
+	return out
+}
+
+// runInlineBenchmark executes the five verification operations inline in the
+// request path, timing each individually, and returns overall pass/fail plus
+// the per-op results.
+//
+// The operations run concurrently as far as their data dependencies allow:
+// token_review is independent and starts immediately, while kc_fetch gates
+// counter_attestation, rbe_proof and challenge_response, which all consume its
+// notification and so fan out together once it lands. The call returns as soon
+// as any operation fails, without waiting for the rest; the stragglers finish
+// on their own goroutines and are dropped.
+//
+// Note that the per-op durations are wall-clock and now overlap, so the three
+// CPU-bound RBE ops contend for cores and each may read slightly higher than it
+// did when they ran in sequence. The total is correspondingly lower.
 func (s *ExtAuthzServer) runInlineBenchmark(ctx context.Context, id int, token string) (bool, []benchmarkOpResult) {
 	totalStart := time.Now()
-	results := make([]benchmarkOpResult, 0, 5)
 
-	// --- 1. KC fetch ---
-	var notif *pb.RegistrationNotification
-	{
+	// Scopes the KC fetch to this call so a fail-fast return tears it down
+	// instead of leaving it to run out its own timeout. verifyToken is
+	// deliberately left on the parent ctx: cancelling it mid-flight would make
+	// it cache a spurious failure for the token for tokenCacheTTL.
+	fetchCtx, cancelFetch := context.WithCancel(ctx)
+	defer cancelFetch()
+
+	b := &benchmarkRun{failed: make(chan struct{}, len(benchmarkOpOrder))}
+
+	// --- 5. Token review (independent of the KC fetch; overlaps everything) ---
+	b.run("token_review", func() bool {
+		if err := s.verifyToken(ctx, token); err != nil {
+			extAuthzLog.Errorf("[benchmark] token_review failed for id=%d: %v", id, err)
+			return false
+		}
+		return true
+	})
+
+	// --- 1. KC fetch, then the three checks that depend on its result ---
+	b.wg.Add(1)
+	go func() {
+		defer b.wg.Done()
+
+		var notif *pb.RegistrationNotification
 		start := time.Now()
 		passed := false
 		if s.kcClient != nil {
-			fetchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			timeoutCtx, cancel := context.WithTimeout(fetchCtx, 5*time.Second)
 			var err error
-			notif, err = s.kcClient.FetchRegistration(fetchCtx, int64(id))
+			notif, err = s.kcClient.FetchRegistration(timeoutCtx, int64(id))
 			cancel()
 			if err != nil {
 				extAuthzLog.Errorf("[benchmark] kc_fetch failed for id=%d: %v", id, err)
@@ -491,47 +604,39 @@ func (s *ExtAuthzServer) runInlineBenchmark(ctx context.Context, id int, token s
 		} else {
 			extAuthzLog.Errorf("[benchmark] kc_fetch skipped: kcClient is nil")
 		}
-		results = append(results, benchmarkOpResult{
+		b.mu.Lock()
+		b.results = append(b.results, benchmarkOpResult{
 			op:         "kc_fetch",
 			durationUs: time.Since(start).Microseconds(),
 			passed:     passed,
 		})
+		b.mu.Unlock()
 		if !passed {
-			recordBenchmarkMetrics(totalStart, results)
-			return false, results
+			b.failed <- struct{}{}
+			return
 		}
-	}
 
-	// --- 2. Counter attestation ---
-	{
-		start := time.Now()
-		passed := true
-		if notif.GetCounterAttestation() != nil && notif.GetRegisterRequestBytes() != nil {
+		// --- 2. Counter attestation ---
+		b.run("counter_attestation", func() bool {
+			if notif.GetCounterAttestation() == nil || notif.GetRegisterRequestBytes() == nil {
+				return true
+			}
 			attestation := trincutil.AttestationFromProto(notif.GetCounterAttestation())
 			regMsg := notif.GetRegisterRequestBytes()
 			proofBytes, _ := gproto.Marshal(notif.GetProof())
 			attestUserData := append(regMsg, proofBytes...)
 			if !trincutil.DoVerifyCounter(attestUserData, attestation) {
 				extAuthzLog.Errorf("[benchmark] counter_attestation failed for id=%d", id)
-				passed = false
+				return false
 			}
-		}
-		results = append(results, benchmarkOpResult{
-			op:         "counter_attestation",
-			durationUs: time.Since(start).Microseconds(),
-			passed:     passed,
+			return true
 		})
-		if !passed {
-			recordBenchmarkMetrics(totalStart, results)
-			return false, results
-		}
-	}
 
-	// --- 3. RBE proof verification ---
-	{
-		start := time.Now()
-		passed := true
-		if notif.GetProof() != nil && len(notif.GetProof().GetPoint()) > 0 && s.rbeState != nil {
+		// --- 3. RBE proof verification ---
+		b.run("rbe_proof", func() bool {
+			if notif.GetProof() == nil || len(notif.GetProof().GetPoint()) == 0 || s.rbeState == nil {
+				return true
+			}
 			proof := new(bls.G1)
 			proof.SetBytes(notif.GetProof().GetPoint())
 
@@ -543,73 +648,50 @@ func (s *ExtAuthzServer) runInlineBenchmark(ctx context.Context, id int, token s
 					publicKey.SetBytes(req.GetPublicKey().GetPoint())
 				}
 			}
-
-			if publicKey != nil {
-				if !s.rbeState.VerifyMembershipOrdered(id, publicKey, proof) {
-					extAuthzLog.Errorf("[benchmark] rbe_proof verification failed for id=%d", id)
-					passed = false
-				}
+			if publicKey == nil {
+				return true
 			}
-		}
-		results = append(results, benchmarkOpResult{
-			op:         "rbe_proof",
-			durationUs: time.Since(start).Microseconds(),
-			passed:     passed,
+			if !s.rbeState.VerifyMembershipOrdered(id, publicKey, proof) {
+				extAuthzLog.Errorf("[benchmark] rbe_proof verification failed for id=%d", id)
+				return false
+			}
+			return true
 		})
-		if !passed {
-			recordBenchmarkMetrics(totalStart, results)
-			return false, results
-		}
-	}
 
-	// --- 4. Challenge-response ---
-	{
-		start := time.Now()
-		passed := true
-		if notif.GetRegisterRequestBytes() != nil && s.rbeState != nil {
+		// --- 4. Challenge-response ---
+		b.run("challenge_response", func() bool {
+			if notif.GetRegisterRequestBytes() == nil || s.rbeState == nil {
+				return true
+			}
 			req := &pb.RegisterRequest{}
-			if err := gproto.Unmarshal(notif.GetRegisterRequestBytes(), req); err == nil {
-				passed = regstate.ValidatePodChallenge(s.rbeState, id, req)
-				if !passed {
-					extAuthzLog.Errorf("[benchmark] challenge_response failed for id=%d", id)
-				}
-			} else {
+			if err := gproto.Unmarshal(notif.GetRegisterRequestBytes(), req); err != nil {
 				extAuthzLog.Errorf("[benchmark] failed to unmarshal RegisterRequest for id=%d: %v", id, err)
-				passed = false
+				return false
 			}
-		}
-		results = append(results, benchmarkOpResult{
-			op:         "challenge_response",
-			durationUs: time.Since(start).Microseconds(),
-			passed:     passed,
+			if !regstate.ValidatePodChallenge(s.rbeState, id, req) {
+				extAuthzLog.Errorf("[benchmark] challenge_response failed for id=%d", id)
+				return false
+			}
+			return true
 		})
-		if !passed {
-			recordBenchmarkMetrics(totalStart, results)
-			return false, results
-		}
-	}
+	}()
 
-	// --- 5. Token review ---
-	{
-		start := time.Now()
-		passed := true
-		if err := s.verifyToken(ctx, token); err != nil {
-			extAuthzLog.Errorf("[benchmark] token_review failed for id=%d: %v", id, err)
-			passed = false
-		}
-		results = append(results, benchmarkOpResult{
-			op:         "token_review",
-			durationUs: time.Since(start).Microseconds(),
-			passed:     passed,
-		})
-		if !passed {
-			recordBenchmarkMetrics(totalStart, results)
-			return false, results
-		}
-	}
+	done := make(chan struct{})
+	go func() {
+		b.wg.Wait()
+		close(done)
+	}()
 
-	recordBenchmarkMetrics(totalStart, results)
-	return true, results
+	select {
+	case <-b.failed:
+		results := b.snapshot()
+		recordBenchmarkMetrics(totalStart, results)
+		return false, results
+	case <-done:
+		results := b.snapshot()
+		recordBenchmarkMetrics(totalStart, results)
+		return true, results
+	}
 }
 
 // logBenchmarkResults emits structured log lines for each benchmark operation.

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -292,6 +293,7 @@ const MAZU_ATTESTATION_ENABLED = "MAZU_ATTESTATION_ENABLED"
 const MAZU_RBE_PROOF_ENABLED = "MAZU_RBE_PROOF_ENABLED"
 const MAZU_ON_DEMAND_ENABLED = "MAZU_ON_DEMAND_ENABLED"
 const MAZU_BENCHMARK_INLINE_ENABLED = "MAZU_BENCHMARK_INLINE_ENABLED"
+const MAZU_ENVOY_CACHE_TTL_MS = "MAZU_ENVOY_CACHE_TTL_MS"
 
 // looks for MAZU_ATTESTATION_ENABLED file loaded by config map: mazu-config
 // under path: /etc/mazu-config/MAZU_ATTESTATION_ENABLED
@@ -330,6 +332,36 @@ func IsBenchmarkInlineEnabled() bool {
 	}
 	log.Infof("[dev] benchmark inline mode is enabled")
 	return true
+}
+
+// EnvoyCacheTTLMs returns the verdict-cache TTL, in milliseconds, to configure
+// on Envoy's RBE TLS certificate validator, and whether the value was set at
+// all. It reads /etc/mazu-config/MAZU_ENVOY_CACHE_TTL_MS.
+//
+// A value of 0 disables the validator's per-worker verdict cache, so every TLS
+// handshake makes a fresh ext_authz Check — which is what inline benchmarking
+// wants, since a cached verdict otherwise hides the per-operation cost. When
+// the key is absent the caller should leave the field unset and let Envoy apply
+// its own default (1s).
+//
+// This is read by istiod, not by the proxy: istiod bakes the value into the
+// validator's typed config and pushes it to every sidecar over xDS, so the
+// value only has to reach the istiod pod.
+func EnvoyCacheTTLMs() (int, bool) {
+	filepath := fmt.Sprintf("%s/%s", MAZU_CONFIG_PATH, MAZU_ENVOY_CACHE_TTL_MS)
+	content, err := os.ReadFile(filepath)
+	if err != nil {
+		log.Infof("[dev] envoy cache TTL unset, file %s not found; using envoy default", filepath)
+		return 0, false
+	}
+	raw := strings.TrimSpace(string(content))
+	ms, err := strconv.Atoi(raw)
+	if err != nil || ms < 0 {
+		log.Warnf("[dev] envoy cache TTL %q is not a non-negative integer; using envoy default", raw)
+		return 0, false
+	}
+	log.Infof("[dev] envoy cache TTL set to %dms", ms)
+	return ms, true
 }
 
 func IsOnDemandEnabled() bool {
